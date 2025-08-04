@@ -1,7 +1,7 @@
 #include <bits/stdc++.h>
 using namespace std;
 
-const int eps = 256;
+const int epsilon = 256;
 
 vector<unordered_map<int, set<int>>> adj; 
 
@@ -13,6 +13,7 @@ int make_node() {
 
 string pattern;
 int i = 0;
+pair<int, int> start_end;
 
 int peek() {
     if (i == (int) pattern.size()) {
@@ -122,11 +123,11 @@ pair<int, int> parse_REtail(pair<int, int> lvalue) {
         auto [up_start, up_end] = lvalue;
         auto [down_start, down_end] = simple_RE_res;
 
-        adj[start][eps].insert(up_start);
-        adj[up_end][eps].insert(end);
+        adj[start][epsilon].insert(up_start);
+        adj[up_end][epsilon].insert(end);
         
-        adj[start][eps].insert(down_start);
-        adj[down_end][eps].insert(end);
+        adj[start][epsilon].insert(down_start);
+        adj[down_end][epsilon].insert(end);
 
         pair<int, int> new_res = make_pair(start, end);
 
@@ -155,7 +156,7 @@ pair<int, int> parse_simple_REtail(pair<int, int> lvalue) {
     auto [left_start, left_end] = lvalue;
     auto [right_start, right_end] = basic_RE_res;
 
-    adj[left_end][eps].insert(right_start); // concatenation
+    adj[left_end][epsilon].insert(right_start); // concatenation
 
     pair<int, int> right_res = make_pair(left_start, right_end);
 
@@ -176,22 +177,22 @@ pair<int, int> parse_basic_RE() {
     int end = make_node();
 
     // common for all
-    adj[start][eps].insert(elementary_RE_start);
-    adj[elementary_RE_end][eps].insert(end);
+    adj[start][epsilon].insert(elementary_RE_start);
+    adj[elementary_RE_end][epsilon].insert(end);
 
     if (peek() == '*') {
         match('*');
         
-        adj[elementary_RE_end][eps].insert(elementary_RE_start);
-        adj[start][eps].insert(end);
+        adj[elementary_RE_end][epsilon].insert(elementary_RE_start);
+        adj[start][epsilon].insert(end);
     } else if (peek() == '+') {
         match('+');
         
-        adj[elementary_RE_end][eps].insert(elementary_RE_start);
+        adj[elementary_RE_end][epsilon].insert(elementary_RE_start);
     } else if (peek() == '?') {
         match('?');
         
-        adj[start][eps].insert(end);
+        adj[start][epsilon].insert(end);
     } else {
         assert(false);
     }
@@ -367,14 +368,91 @@ pair<int, int> parse_char() {
     return {-1, -1};
 }
 
+void epsilon_closure(int curr, set<int>& res) {
+    res.insert(curr);
+    for (auto next: adj[curr][epsilon]) {
+        if (res.find(next) == res.end())
+            epsilon_closure(next, res);
+    }
+}
+
+bool check(string input) {
+    auto [start, end] = start_end;
+
+    set<int> epsilon_closure_start;
+    epsilon_closure(start, epsilon_closure_start);
+
+    set<int> current_states;
+    current_states.insert(epsilon_closure_start.begin(), epsilon_closure_start.end());
+    for (auto c: input) {
+        set<int> next_states;
+        for (auto curr: current_states) {
+            for (auto next: adj[curr][c]) {
+                set<int> next_epsilon_closure;
+                epsilon_closure(next, next_epsilon_closure);
+                next_states.insert(next_epsilon_closure.begin(), next_epsilon_closure.end());
+            }
+        }
+        current_states = next_states;
+    }
+
+    return (current_states.find(end) != current_states.end());
+}
+
+void run_testcases() {
+    vector<pair<string, string>> testcases = {
+        {"a", "a"},
+        {"a", "b"},
+        {"a", "ab"},
+        {"a*", "aaaaaaaaaaa"},
+        {"a*", "aaaaaaaaaabaaaaaa"},
+        {"a|b|c", "a"},
+        {"a|b|c", "b"},
+        {"a|b|c", "d"},
+        {"[hc]at", "hat"},
+        {"[hc]at", "cat"},
+        {"[hc]at", "mat"},
+        {".at", "hat"},
+        {".at", "cat"},
+        {".at", "mat"},
+        {".at", "pat"},
+        {"([hc]at)?[mp]at", "hat"},
+        {"([hc]at)?[mp]at", "mat"},
+        {"([hc]at)?[mp]at", "catmat"},
+        {"([hc]at)?[mp]at", "pat"},
+        {"[a-zA-Z0-9]", "G"},
+        {"[a-zA-Z0-9]", "5"},
+        {"[a-zA-Z0-9]", "@"},
+        // Regular Expression for matching a numeral (https://en.wikipedia.org/wiki/Regular_expression)
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1000000"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "-1"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e9"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-5"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1E-5"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-12233342"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "3.1415926535"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "237429342e24801"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "6.022e+23"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "e+23"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd123"},
+        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "123abcd"},
+    };
+
+    for (auto [p, input]: testcases) {
+        i = 0;
+        adj.clear();
+        adj.push_back(unordered_map<int, set<int>>()); // 0 is the dead state
+        pattern = p;
+        start_end = parse_RE();
+        cout << p << " " << input << ": " << (check(input)? "match": "no match") << endl;
+    }
+}
+
 int main() {
-    adj.push_back(unordered_map<int, set<int>>()); // 0 is the dead state
 
-    cin >> pattern;
-
-    parse_RE();
-
-    assert(i == int(pattern.size()));
+    run_testcases();
 
     return 0;
 }
