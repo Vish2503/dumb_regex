@@ -1,79 +1,13 @@
-#include <bits/stdc++.h>
+#include <iostream>
+#include <vector>
+#include <unordered_map>
+#include <set>
+#include <cassert>
 using namespace std;
 
-const int epsilon = 256;
-
-vector<unordered_map<int, set<int>>> adj; 
-
-int make_node() {
-    int node = adj.size();
-    adj.push_back(unordered_map<int, set<int>>());
-    return node;
-}
-
-string pattern;
-int i = 0;
-pair<int, int> start_end;
-
-int peek() {
-    if (i == (int) pattern.size()) {
-        return -1;
-    }
-    
-    return int(pattern[i]);
-}
-
-int match(char c) {
-    if (peek() != c) {
-        cerr << "Expected `" << c << "` but found `" << peek() << "` at index " << i << endl;
-        exit(1);
-    }
-
-    return int(pattern[i++]);
-}
-
-int match_one_of(string s) {
-    if (s.find(peek()) == string::npos) {
-        cerr << "Expected one of `" << s << "` but found `" << char(peek()) << "` at index " << i << endl;
-        exit(1);
-    }
-
-    return int(pattern[i++]);
-}
-
-int match_none_of(string s) {
-    if (0 <= peek() && peek() < 256 && s.find(peek()) != string::npos) {
-        cerr << "Expected not one of `" << s << "` but found `" << char(peek()) << "` at index " << i << endl;
-        exit(1);
-    }
-
-    return int(pattern[i++]);
-}
-
 /*
-https://www.cs.sfu.ca/~cameron/Teaching/384/99-3/regexp-plg.html
 BNF Grammar of Regular Expressions
-Following the precedence rules given previously, a BNF grammar for Perl-style regular expressions can be constructed as follows.
-<RE>	::=	<union> | <simple-RE>
-<union>	::=	<RE> "|" <simple-RE>
-<simple-RE>	::=	<concatenation> | <basic-RE>
-<concatenation>	::=	<simple-RE> <basic-RE>
-<basic-RE>	::=	<star> | <plus> | <elementary-RE>
-<star>	::=	<elementary-RE> "*"
-<plus>	::=	<elementary-RE> "+"
-<elementary-RE>	::=	<group> | <any> | <eos> | <char> | <set>
-<group>	::=	"(" <RE> ")"
-<any>	::=	"."
-<eos>	::=	"$"
-<char>	::=	any non metacharacter | "\" metacharacter
-<set>	::=	<positive-set> | <negative-set>
-<positive-set>	::=	"[" <set-items> "]"
-<negative-set>	::=	"[^" <set-items> "]"
-<set-items>	::=	<set-item> | <set-item> <set-items>
-<set-item>	::=	<range> | <char>
-<range>	::=	<char> "-" <char>
 
-After making some changes:
 <RE>	::=	<simple-RE> <REtail>
 <REtail> ::= "|" <simple-RE> <REtail> |  <empty>
 <simple-RE>	::=	<basic-RE> <simple-REtail>
@@ -88,316 +22,361 @@ After making some changes:
 <range>	::=	"-" <char> | <empty>
 <char>	::=	any non metacharacter | "\" metacharacter
 */ 
+class RegularExpression {
+private:
+    string pattern;
+    int parser_index = 0;
 
-pair<int, int> parse_RE();
-pair<int, int> parse_REtail(pair<int, int> lvalue);
-pair<int, int> parse_simple_RE();
-pair<int, int> parse_simple_REtail(pair<int, int> lvalue);
-pair<int, int> parse_basic_RE();
-pair<int, int> parse_elementary_RE();
-pair<int, int> parse_group();
-pair<int, int> parse_any();
-pair<int, int> parse_set();
-pair<int, int> parse_set_items();
-pair<int, int> parse_set_item();
-pair<int, int> parse_range(pair<int, int> lvalue);
-pair<int, int> parse_char();
+    const int epsilon = 256;
+    vector<unordered_map<int, set<int>>> epsilon_nfa_transition; 
+    pair<int, int> epsilon_nfa_start_end;
 
-pair<int, int> parse_RE() {
-    pair<int, int> simple_RE_res = parse_simple_RE();
-    if (simple_RE_res == pair<int, int>{-1, -1}) // not meant to be parsed here
-        return {-1, -1};
-
-    return parse_REtail(simple_RE_res);
-}
-
-pair<int, int> parse_REtail(pair<int, int> lvalue) {
-    if (peek() == '|') { 
-        match('|');
-
-        pair<int, int> simple_RE_res = parse_simple_RE();
-        
-        int start = make_node();
-        int end = make_node();
-
-        auto [up_start, up_end] = lvalue;
-        auto [down_start, down_end] = simple_RE_res;
-
-        adj[start][epsilon].insert(up_start);
-        adj[up_end][epsilon].insert(end);
-        
-        adj[start][epsilon].insert(down_start);
-        adj[down_end][epsilon].insert(end);
-
-        pair<int, int> new_res = make_pair(start, end);
-
-        return parse_REtail(new_res);
-    } else { // <empty> case
-        return lvalue; 
+    int make_epsilon_nfa_node() {
+        int node = epsilon_nfa_transition.size();
+        epsilon_nfa_transition.push_back(unordered_map<int, set<int>>());
+        return node;
     }
 
-    assert(false);
-    return {-1, -1};
-}
+    vector<unordered_map<int, set<int>>> nfa_transition; 
+    pair<int, int> nfa_start_end;
 
-pair<int, int> parse_simple_RE() {
-    pair<int, int> basic_RE_res = parse_basic_RE();
-    if (basic_RE_res == pair<int, int>{-1, -1}) // not meant to be parsed here
-        return {-1, -1};
-
-    return parse_simple_REtail(basic_RE_res);
-}
-
-pair<int, int> parse_simple_REtail(pair<int, int> lvalue) {
-    pair<int, int> basic_RE_res = parse_basic_RE();
-    if (basic_RE_res == pair<int, int>{-1, -1}) // <empty> case
-        return lvalue; 
-
-    auto [left_start, left_end] = lvalue;
-    auto [right_start, right_end] = basic_RE_res;
-
-    adj[left_end][epsilon].insert(right_start); // concatenation
-
-    pair<int, int> right_res = make_pair(left_start, right_end);
-
-    return parse_simple_REtail(right_res);
-}
-
-pair<int, int> parse_basic_RE() {
-    pair<int, int> elementary_RE_res = parse_elementary_RE();
-    if (elementary_RE_res == pair<int, int>{-1, -1}) // not meant to be parsed here
-        return {-1, -1}; 
-
-    if (peek() != '*' && peek() != '+' && peek() != '?')
-        return elementary_RE_res;
-
-    auto [elementary_RE_start, elementary_RE_end] = elementary_RE_res;
-
-    int start = make_node();
-    int end = make_node();
-
-    // common for all
-    adj[start][epsilon].insert(elementary_RE_start);
-    adj[elementary_RE_end][epsilon].insert(end);
-
-    if (peek() == '*') {
-        match('*');
-        
-        adj[elementary_RE_end][epsilon].insert(elementary_RE_start);
-        adj[start][epsilon].insert(end);
-    } else if (peek() == '+') {
-        match('+');
-        
-        adj[elementary_RE_end][epsilon].insert(elementary_RE_start);
-    } else if (peek() == '?') {
-        match('?');
-        
-        adj[start][epsilon].insert(end);
-    } else {
-        assert(false);
-    }
-
-    return {start, end};
-}
-
-pair<int, int> parse_elementary_RE() {
-    pair<int, int> group_res = parse_group();
-    if (group_res != pair<int, int>{-1, -1})
-        return group_res;
-
-    pair<int, int> any_res = parse_any();
-    if (any_res != pair<int, int>{-1, -1})
-        return any_res;
-    
-    pair<int, int> char_res = parse_char();
-    if (char_res != pair<int, int>{-1, -1})
-        return char_res;
-
-    pair<int, int> set_res = parse_set();
-    if (set_res != pair<int, int>{-1, -1})
-        return set_res;
-
-    // not meant to be parsed here 
-    return {-1, -1};
-}
-
-pair<int, int> parse_group() {
-    if (peek() == '(') {
-        match('(');
-        pair<int, int> RE_res = parse_RE();
-        match(')');
-        return RE_res;
-    }
-    
-    // not meant to be parsed here 
-    return {-1, -1};
-}
-
-pair<int, int> parse_any() {
-    if (peek() == '.') {
-        match('.');
-
-        int start = make_node();
-        int end = make_node();
-        
-        // transition for all ascii characters
-        for (int c = 0; c < 256; c++)
-            adj[start][c].insert(end);
-
-        return {start, end};
-    }
-    
-    // not meant to be parsed here
-    return {-1, -1};
-}
-
-pair<int, int> parse_set() {
-    if (peek() == '[') {
-        match('[');
-
-        bool negate = false;
-        if (peek() == '^') {
-            // negative set
-            match('^');
-            negate = true;
+    int parser_peek() {
+        if (parser_index == (int) pattern.size()) {
+            return -1;
         }
+        
+        return int(pattern[parser_index]);
+    }
 
-        pair<int, int> set_items_res = parse_set_items();
-        if (set_items_res == pair<int, int>{-1, -1}) {
-            cerr << "Empty character set found in the pattern at index " << i << endl;
+    int parser_match(char c) {
+        if (parser_peek() != c) {
+            cerr << "Expected `" << c << "` but found `" << parser_peek() << "` at index " << parser_index << endl;
             exit(1);
         }
-        match(']');
+    
+        return int(pattern[parser_index++]);
+    }
 
-        auto [start, end] = set_items_res;
-        if (negate) {
-            unordered_map<int, set<int>> old = adj[start];
-            adj[start].clear();
-            for (int c = 0; c < 256; c++)
-                if (old.find(c) == old.end())
-                    adj[start][c].insert(end);
+    int parser_match_one_of(string s) {
+        if (s.find(parser_peek()) == string::npos) {
+            cerr << "Expected one of `" << s << "` but found `" << char(parser_peek()) << "` at index " << parser_index << endl;
+            exit(1);
+        }
+    
+        return int(pattern[parser_index++]);
+    }
+    
+    int parser_match_none_of(string s) {
+        if (0 <= parser_peek() && parser_peek() < 256 && s.find(parser_peek()) != string::npos) {
+            cerr << "Expected not one of `" << s << "` but found `" << char(parser_peek()) << "` at index " << parser_index << endl;
+            exit(1);
+        }
+    
+        return int(pattern[parser_index++]);
+    }
+
+    pair<int, int> parse_RE() {
+        pair<int, int> simple_RE_res = parse_simple_RE();
+        if (simple_RE_res == pair<int, int>{-1, -1}) // not meant to be parsed here
+            return {-1, -1};
+
+        return parse_REtail(simple_RE_res);
+    }
+
+    pair<int, int> parse_REtail(pair<int, int> lvalue) {
+        if (parser_peek() == '|') { 
+            parser_match('|');
+
+            pair<int, int> simple_RE_res = parse_simple_RE();
+            
+            int start = make_epsilon_nfa_node();
+            int end = make_epsilon_nfa_node();
+
+            auto [up_start, up_end] = lvalue;
+            auto [down_start, down_end] = simple_RE_res;
+
+            epsilon_nfa_transition[start][epsilon].insert(up_start);
+            epsilon_nfa_transition[up_end][epsilon].insert(end);
+            
+            epsilon_nfa_transition[start][epsilon].insert(down_start);
+            epsilon_nfa_transition[down_end][epsilon].insert(end);
+
+            pair<int, int> new_res = make_pair(start, end);
+
+            return parse_REtail(new_res);
+        } else { // <empty> case
+            return lvalue; 
+        }
+
+        assert(false);
+        return {-1, -1};
+    }
+
+    pair<int, int> parse_simple_RE() {
+        pair<int, int> basic_RE_res = parse_basic_RE();
+        if (basic_RE_res == pair<int, int>{-1, -1}) // not meant to be parsed here
+            return {-1, -1};
+
+        return parse_simple_REtail(basic_RE_res);
+    }
+
+    pair<int, int> parse_simple_REtail(pair<int, int> lvalue) {
+        pair<int, int> basic_RE_res = parse_basic_RE();
+        if (basic_RE_res == pair<int, int>{-1, -1}) // <empty> case
+            return lvalue; 
+
+        auto [left_start, left_end] = lvalue;
+        auto [right_start, right_end] = basic_RE_res;
+
+        epsilon_nfa_transition[left_end][epsilon].insert(right_start); // concatenation
+
+        pair<int, int> right_res = make_pair(left_start, right_end);
+
+        return parse_simple_REtail(right_res);
+    }
+
+    pair<int, int> parse_basic_RE() {
+        pair<int, int> elementary_RE_res = parse_elementary_RE();
+        if (elementary_RE_res == pair<int, int>{-1, -1}) // not meant to be parsed here
+            return {-1, -1}; 
+
+        if (parser_peek() != '*' && parser_peek() != '+' && parser_peek() != '?')
+            return elementary_RE_res;
+
+        auto [elementary_RE_start, elementary_RE_end] = elementary_RE_res;
+
+        int start = make_epsilon_nfa_node();
+        int end = make_epsilon_nfa_node();
+
+        // common for all
+        epsilon_nfa_transition[start][epsilon].insert(elementary_RE_start);
+        epsilon_nfa_transition[elementary_RE_end][epsilon].insert(end);
+
+        if (parser_peek() == '*') {
+            parser_match('*');
+            
+            epsilon_nfa_transition[elementary_RE_end][epsilon].insert(elementary_RE_start);
+            epsilon_nfa_transition[start][epsilon].insert(end);
+        } else if (parser_peek() == '+') {
+            parser_match('+');
+            
+            epsilon_nfa_transition[elementary_RE_end][epsilon].insert(elementary_RE_start);
+        } else if (parser_peek() == '?') {
+            parser_match('?');
+            
+            epsilon_nfa_transition[start][epsilon].insert(end);
+        } else {
+            assert(false);
         }
 
         return {start, end};
     }
-    
-    // not meant to be parsed here
-    return {-1, -1};
-}
 
-pair<int, int> parse_set_items() {
-    pair<int, int> set_item_res = parse_set_item();
-    if (set_item_res == pair<int, int>{-1, -1})
-        return {-1, -1};
+    pair<int, int> parse_elementary_RE() {
+        pair<int, int> group_res = parse_group();
+        if (group_res != pair<int, int>{-1, -1})
+            return group_res;
 
-    pair<int, int> set_items_res = parse_set_items();
-    if (set_items_res == pair<int, int>{-1, -1})
-        return set_item_res;
-
-    auto [start, end] = set_item_res;
-    for (auto &[c, _]: adj[set_items_res.first])
-        adj[start][c].insert(end);  
-
-    return {start, end};
-}
-
-pair<int, int> parse_set_item() {
-    pair<int, int> char_res = parse_char();
-    if (char_res == pair<int, int>{-1, -1})
-        return {-1, -1}; // not meant to be parsed here
-
-    pair<int, int> range_res = parse_range(char_res);
-    return range_res;
-}
-
-pair<int, int> parse_range(pair<int, int> lvalue) {
-    if (peek() == '-') {
-        match('-');
-
-        auto [start, end] = lvalue;
-
+        pair<int, int> any_res = parse_any();
+        if (any_res != pair<int, int>{-1, -1})
+            return any_res;
+        
         pair<int, int> char_res = parse_char();
+        if (char_res != pair<int, int>{-1, -1})
+            return char_res;
 
-        if (char_res == pair<int, int>{-1, -1}) { // treat '-' as a normal character
-            adj[start]['-'].insert(end);
+        pair<int, int> set_res = parse_set();
+        if (set_res != pair<int, int>{-1, -1})
+            return set_res;
+
+        // not meant to be parsed here 
+        return {-1, -1};
+    }
+
+    pair<int, int> parse_group() {
+        if (parser_peek() == '(') {
+            parser_match('(');
+            pair<int, int> RE_res = parse_RE();
+            parser_match(')');
+            return RE_res;
+        }
+        
+        // not meant to be parsed here 
+        return {-1, -1};
+    }
+
+    pair<int, int> parse_any() {
+        if (parser_peek() == '.') {
+            parser_match('.');
+
+            int start = make_epsilon_nfa_node();
+            int end = make_epsilon_nfa_node();
             
+            // transition for all ascii characters
+            for (int c = 0; c < 256; c++)
+                epsilon_nfa_transition[start][c].insert(end);
+
             return {start, end};
         }
         
-        char range_start = adj[start].begin()->first;
-        char range_end = adj[char_res.first].begin()->first;
-        
-        if (range_start > range_end) { // treat as normal characters, for example: z-a as 'z' '-' 'a'
-            adj[start][range_start].insert(end);
-            adj[start]['-'].insert(end);
-            adj[start][range_end].insert(end);
-        } else {
-            for (int c = range_start; c <= range_end; c++)
-                adj[start][c].insert(end);
-        }
-
-        return {start, end};
-    }
-    
-    return lvalue; // <empty> case
-}
-
-pair<int, int> parse_char() {
-    const string meta_characters = "[]\\.^$*+?{}|()";
-    if (peek() == '\\') {
-        match('\\');
-
-        int c = match_one_of(meta_characters);
-
-        int start = make_node();
-        int end = make_node();
-        adj[start][c].insert(end);
-
-        return {start, end};
-    } else if (0 <= peek() && peek() < 256 && meta_characters.find(peek()) == string::npos) {
-        int c = match_none_of(meta_characters);
-
-        int start = make_node();
-        int end = make_node();
-        adj[start][c].insert(end);
-
-        return {start, end};
+        // not meant to be parsed here
+        return {-1, -1};
     }
 
-    // peek() is not meant to be parsed here
-    return {-1, -1};
-}
+    pair<int, int> parse_set() {
+        if (parser_peek() == '[') {
+            parser_match('[');
 
-void epsilon_closure(int curr, set<int>& res) {
-    res.insert(curr);
-    for (auto next: adj[curr][epsilon]) {
-        if (res.find(next) == res.end())
-            epsilon_closure(next, res);
-    }
-}
-
-bool check(string input) {
-    auto [start, end] = start_end;
-
-    set<int> epsilon_closure_start;
-    epsilon_closure(start, epsilon_closure_start);
-
-    set<int> current_states;
-    current_states.insert(epsilon_closure_start.begin(), epsilon_closure_start.end());
-    for (auto c: input) {
-        set<int> next_states;
-        for (auto curr: current_states) {
-            for (auto next: adj[curr][c]) {
-                set<int> next_epsilon_closure;
-                epsilon_closure(next, next_epsilon_closure);
-                next_states.insert(next_epsilon_closure.begin(), next_epsilon_closure.end());
+            bool negate = false;
+            if (parser_peek() == '^') {
+                // negative set
+                parser_match('^');
+                negate = true;
             }
+
+            pair<int, int> set_items_res = parse_set_items();
+            if (set_items_res == pair<int, int>{-1, -1}) {
+                cerr << "Empty character set found in the pattern at index " << parser_index << endl;
+                exit(1);
+            }
+            parser_match(']');
+
+            auto [start, end] = set_items_res;
+            if (negate) {
+                unordered_map<int, set<int>> old = epsilon_nfa_transition[start];
+                epsilon_nfa_transition[start].clear();
+                for (int c = 0; c < 256; c++)
+                    if (old.find(c) == old.end())
+                        epsilon_nfa_transition[start][c].insert(end);
+            }
+
+            return {start, end};
         }
-        current_states = next_states;
+        
+        // not meant to be parsed here
+        return {-1, -1};
     }
 
-    return (current_states.find(end) != current_states.end());
-}
+    pair<int, int> parse_set_items() {
+        pair<int, int> set_item_res = parse_set_item();
+        if (set_item_res == pair<int, int>{-1, -1})
+            return {-1, -1};
+
+        pair<int, int> set_items_res = parse_set_items();
+        if (set_items_res == pair<int, int>{-1, -1})
+            return set_item_res;
+
+        auto [start, end] = set_item_res;
+        for (auto &[c, _]: epsilon_nfa_transition[set_items_res.first])
+            epsilon_nfa_transition[start][c].insert(end);  
+
+        return {start, end};
+    }
+
+    pair<int, int> parse_set_item() {
+        pair<int, int> char_res = parse_char();
+        if (char_res == pair<int, int>{-1, -1})
+            return {-1, -1}; // not meant to be parsed here
+
+        pair<int, int> range_res = parse_range(char_res);
+        return range_res;
+    }
+
+    pair<int, int> parse_range(pair<int, int> lvalue) {
+        if (parser_peek() == '-') {
+            parser_match('-');
+
+            auto [start, end] = lvalue;
+
+            pair<int, int> char_res = parse_char();
+
+            if (char_res == pair<int, int>{-1, -1}) { // treat '-' as a normal character
+                epsilon_nfa_transition[start]['-'].insert(end);
+                
+                return {start, end};
+            }
+            
+            char range_start = epsilon_nfa_transition[start].begin()->first;
+            char range_end = epsilon_nfa_transition[char_res.first].begin()->first;
+            
+            if (range_start > range_end) { // treat as normal characters, for example: z-a as 'z' '-' 'a'
+                epsilon_nfa_transition[start][range_start].insert(end);
+                epsilon_nfa_transition[start]['-'].insert(end);
+                epsilon_nfa_transition[start][range_end].insert(end);
+            } else {
+                for (int c = range_start; c <= range_end; c++)
+                    epsilon_nfa_transition[start][c].insert(end);
+            }
+
+            return {start, end};
+        }
+        
+        return lvalue; // <empty> case
+    }
+
+    pair<int, int> parse_char() {
+        const string meta_characters = "[]\\.^$*+?{}|()";
+        if (parser_peek() == '\\') {
+            parser_match('\\');
+
+            int c = parser_match_one_of(meta_characters);
+
+            int start = make_epsilon_nfa_node();
+            int end = make_epsilon_nfa_node();
+            epsilon_nfa_transition[start][c].insert(end);
+
+            return {start, end};
+        } else if (0 <= parser_peek() && parser_peek() < 256 && meta_characters.find(parser_peek()) == string::npos) {
+            int c = parser_match_none_of(meta_characters);
+
+            int start = make_epsilon_nfa_node();
+            int end = make_epsilon_nfa_node();
+            epsilon_nfa_transition[start][c].insert(end);
+
+            return {start, end};
+        }
+
+        // parser_peek() is not meant to be parsed here
+        return {-1, -1};
+    }
+
+    void epsilon_closure(int curr, set<int>& res) {
+        res.insert(curr);
+        for (auto next: epsilon_nfa_transition[curr][epsilon]) {
+            if (res.find(next) == res.end())
+                epsilon_closure(next, res);
+        }
+    }
+
+public:
+    RegularExpression(string pattern) : pattern(pattern) {
+        epsilon_nfa_start_end = parse_RE();
+    }
+
+    bool match(string input) {
+        auto [start, end] = epsilon_nfa_start_end;
+
+        set<int> epsilon_closure_start;
+        epsilon_closure(start, epsilon_closure_start);
+
+        set<int> current_states;
+        current_states.insert(epsilon_closure_start.begin(), epsilon_closure_start.end());
+        for (auto c: input) {
+            set<int> next_states;
+            for (auto curr: current_states) {
+                for (auto next: epsilon_nfa_transition[curr][c]) {
+                    set<int> next_epsilon_closure;
+                    epsilon_closure(next, next_epsilon_closure);
+                    next_states.insert(next_epsilon_closure.begin(), next_epsilon_closure.end());
+                }
+            }
+            current_states = next_states;
+        }
+
+        return (current_states.find(end) != current_states.end());
+    }
+};
+
 
 void run_testcases() {
     vector<pair<string, string>> testcases = {
@@ -440,13 +419,10 @@ void run_testcases() {
         {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "123abcd"},
     };
 
-    for (auto [p, input]: testcases) {
-        i = 0;
-        adj.clear();
-        adj.push_back(unordered_map<int, set<int>>()); // 0 is the dead state
-        pattern = p;
-        start_end = parse_RE();
-        cout << p << " " << input << ": " << (check(input)? "match": "no match") << endl;
+    for (auto [pattern, input]: testcases) {
+        RegularExpression regex(pattern);
+        bool is_match = regex.match(input);
+        cout << pattern << " " << input << ": " << (is_match? "match": "no match") << endl;
     }
 }
 
