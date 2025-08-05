@@ -1,6 +1,8 @@
 #include <iostream>
 #include <vector>
-#include <unordered_map>
+#include <map>
+#include <map>
+#include <set>
 #include <set>
 #include <cassert>
 using namespace std;
@@ -27,18 +29,51 @@ private:
     string pattern;
     int parser_index = 0;
 
+    enum EngineState {
+        REGEX,
+        EPSILON_NFA,
+        NFA,
+        DFA,
+        MINIMIZED_DFA
+    };
+
+    EngineState engine_state = REGEX;
+
     const int epsilon = 256;
-    vector<unordered_map<int, set<int>>> epsilon_nfa_transition; 
+    vector<map<int, set<int>>> epsilon_nfa_transition; 
     pair<int, int> epsilon_nfa_start_end;
 
     int make_epsilon_nfa_node() {
         int node = epsilon_nfa_transition.size();
-        epsilon_nfa_transition.push_back(unordered_map<int, set<int>>());
+        epsilon_nfa_transition.push_back(map<int, set<int>>());
         return node;
     }
 
-    vector<unordered_map<int, set<int>>> nfa_transition; 
-    pair<int, int> nfa_start_end;
+    vector<map<int, set<int>>> nfa_transition; 
+    pair<int, set<int>> nfa_start_end;
+    int make_nfa_node() {
+        int node = nfa_transition.size();
+        nfa_transition.push_back(map<int, set<int>>());
+        return node;
+    }
+
+    vector<map<int, int>> dfa_transition; 
+    pair<int, set<int>> dfa_start_end;
+
+    int make_dfa_node() {
+        int node = dfa_transition.size();
+        dfa_transition.push_back(map<int, int>());
+        return node;
+    }
+
+    vector<map<int, int>> minimized_dfa_transition; 
+    pair<int, set<int>> minimized_dfa_start_end;
+
+    int make_minimized_dfa_node() {
+        int node = minimized_dfa_transition.size();
+        minimized_dfa_transition.push_back(map<int, int>());
+        return node;
+    }
 
     int parser_peek() {
         if (parser_index == (int) pattern.size()) {
@@ -243,7 +278,7 @@ private:
 
             auto [start, end] = set_items_res;
             if (negate) {
-                unordered_map<int, set<int>> old = epsilon_nfa_transition[start];
+                map<int, set<int>> old = epsilon_nfa_transition[start];
                 epsilon_nfa_transition[start].clear();
                 for (int c = 0; c < 256; c++)
                     if (old.find(c) == old.end())
@@ -348,12 +383,185 @@ private:
         }
     }
 
+    void generate_epsilon_nfa() {
+        if (engine_state >= EPSILON_NFA)
+            return;
+        
+        epsilon_nfa_start_end = parse_RE();
+        engine_state = EPSILON_NFA;    
+    }
+
+    void generate_nfa() {
+        if (engine_state >= NFA)
+            return;
+        
+        generate_epsilon_nfa();
+
+        int n = epsilon_nfa_transition.size();
+        nfa_transition.resize(n); // one to one mapping between states
+
+        auto [epsilon_nfa_start, epsilon_nfa_end] = epsilon_nfa_start_end;
+
+        int nfa_start = epsilon_nfa_start;
+        set<int> nfa_end;
+
+        vector<set<int>> node_epsilon_closure(n);
+        for (int curr = 0; curr < n; curr++) {
+            set<int> curr_epsilon_closure;
+            epsilon_closure(curr, curr_epsilon_closure);
+
+            node_epsilon_closure[curr] = curr_epsilon_closure;
+
+            if (curr_epsilon_closure.find(epsilon_nfa_end) != curr_epsilon_closure.end())
+                nfa_end.insert(curr);
+        }
+
+        for (int curr = 0; curr < n; curr++) {
+            for (auto epsilon_state: node_epsilon_closure[curr]) { // first epsilon closure
+                for (auto &[alphabet, next_states]: epsilon_nfa_transition[epsilon_state]) { // input character
+                    if (alphabet == epsilon)
+                        continue;
+                    for (auto next: next_states) {
+                        nfa_transition[curr][alphabet].insert(node_epsilon_closure[next].begin(), node_epsilon_closure[next].end()); // second epsilon closure
+                    }
+                }
+            }
+        }
+
+        nfa_start_end = make_pair(nfa_start, nfa_end);
+        engine_state = NFA;
+    }
+
+    void generate_dfa() {
+        if (engine_state >= DFA)
+            return;
+        
+        generate_nfa();
+
+        auto [nfa_start, nfa_end] = nfa_start_end;
+
+        make_dfa_node(); // default dead state at 0
+
+        map<set<int>, int> subset_to_dfa_node;
+
+        set<int> start = {nfa_start};
+        subset_to_dfa_node[start] = make_dfa_node();
+
+        vector<set<int>> stack;
+        stack.push_back(start);
+        while (!stack.empty()) {
+            set<int> curr_states = stack.back();
+            stack.pop_back();
+            int curr_node = subset_to_dfa_node[curr_states];
+
+            map<int, set<int>> current_transitions;
+            for (auto curr: curr_states) {
+                for (auto &[alphabet, next_states]: nfa_transition[curr]) {
+                    current_transitions[alphabet].insert(next_states.begin(), next_states.end());
+                }
+            }
+            
+            for (auto &[alphabet, next_states]: current_transitions) {
+                if (subset_to_dfa_node.find(next_states) == subset_to_dfa_node.end()) {
+                    subset_to_dfa_node[next_states] = make_dfa_node();
+                    stack.push_back(next_states);
+                }
+                dfa_transition[curr_node][alphabet] = subset_to_dfa_node[next_states];
+            }
+        }
+
+        set<int> end_states;
+        for (auto &[subset, dfa_node]: subset_to_dfa_node) {
+            for (auto end: nfa_end) {
+                if (subset.find(end) != subset.end()) {
+                    end_states.insert(dfa_node);
+                    break;
+                }
+            }
+        }
+
+        dfa_start_end = make_pair(subset_to_dfa_node[start], end_states);
+        engine_state = DFA;
+    }
+
+    void generate_minimized_dfa() {
+        if (engine_state >= MINIMIZED_DFA)
+            return;
+        
+        generate_dfa();
+
+        auto [dfa_start, dfa_end] = dfa_start_end;
+        int total_dfa_states = dfa_transition.size();
+
+        make_minimized_dfa_node(); // default dead state at 0
+
+        // unreachable states
+        set<int> reachable_states;
+
+        set<int> current_states = {dfa_start};
+        while (!current_states.empty()) {
+            set<int> next_states;
+            for (auto state: current_states) {
+                for (auto &[_, next]: dfa_transition[state])
+                    if (reachable_states.find(next) == reachable_states.end())
+                        next_states.insert(next);
+            }
+            reachable_states.insert(next_states.begin(), next_states.end());
+            current_states = next_states;
+        }
+        
+        // dead states
+        set<int> dead_states;
+        
+        for (int i = 1; i < total_dfa_states; i++) {
+            set<int> current_states = {i};
+            
+            bool end_state_reachable = false;
+            vector<int> stack = {i};
+            while (!stack.empty()) {
+                int curr = stack.back();
+                stack.pop_back();
+                if (dfa_end.find(curr) != dfa_end.end()) {
+                    end_state_reachable = true;
+                    break;
+                }
+                for (auto [_, next]: dfa_transition[curr]) {
+                    if (current_states.find(next) == current_states.end()) {
+                        current_states.insert(next);
+                        stack.push_back(next);
+                    }
+                }
+            }
+
+            if (!end_state_reachable)
+                dead_states.insert(i);
+        }
+
+        // non distinguishable states
+        assert(false && "Not implemented yet");
+    }
 public:
     RegularExpression(string pattern) : pattern(pattern) {
-        epsilon_nfa_start_end = parse_RE();
+        generate_dfa();
     }
 
     bool match(string input) {
+        switch (engine_state) {
+            case EPSILON_NFA:
+                return match_epsilon_nfa(input);
+            case NFA:
+                return match_nfa(input);
+            case DFA:
+                return match_dfa(input);
+            case MINIMIZED_DFA:
+                return match_minimized_dfa(input);
+            default:
+                assert(false);
+                return false;
+        }
+    }
+
+    bool match_epsilon_nfa(string input) {
         auto [start, end] = epsilon_nfa_start_end;
 
         set<int> epsilon_closure_start;
@@ -375,54 +583,104 @@ public:
 
         return (current_states.find(end) != current_states.end());
     }
+
+    bool match_nfa(string input) {
+        auto [start, end] = nfa_start_end;
+    
+        set<int> current_states = {start};
+        for (auto c: input) {
+            set<int> next_states;
+            for (auto curr: current_states) {
+                for (auto next: nfa_transition[curr][c]) {
+                    next_states.insert(next);
+                }
+            }
+            current_states = next_states;
+        }
+
+        for (auto end_state: end)
+            if (current_states.find(end_state) != current_states.end())
+                return true;
+
+        return false;
+    }
+
+    bool match_dfa(string input) {
+        auto [start, end] = dfa_start_end;
+
+        int curr = start;
+        for (auto c: input) {
+            curr = dfa_transition[curr][c];
+        }
+
+        return end.find(curr) != end.end();
+    }
+
+    bool match_minimized_dfa(string input) {
+        auto [start, end] = minimized_dfa_start_end;
+
+        int curr = start;
+        for (auto c: input) {
+            curr = minimized_dfa_transition[curr][c];
+        }
+
+        return end.find(curr) != end.end();
+    }
 };
 
 
 void run_testcases() {
-    vector<pair<string, string>> testcases = {
-        {"a", "a"},
-        {"a", "b"},
-        {"a", "ab"},
-        {"a*", "aaaaaaaaaaa"},
-        {"a*", "aaaaaaaaaabaaaaaa"},
-        {"a|b|c", "a"},
-        {"a|b|c", "b"},
-        {"a|b|c", "d"},
-        {"[hc]at", "hat"},
-        {"[hc]at", "cat"},
-        {"[hc]at", "mat"},
-        {".at", "hat"},
-        {".at", "cat"},
-        {".at", "mat"},
-        {".at", "pat"},
-        {"([hc]at)?[mp]at", "hat"},
-        {"([hc]at)?[mp]at", "mat"},
-        {"([hc]at)?[mp]at", "catmat"},
-        {"([hc]at)?[mp]at", "pat"},
-        {"[a-zA-Z0-9]", "G"},
-        {"[a-zA-Z0-9]", "5"},
-        {"[a-zA-Z0-9]", "@"},
+    vector<pair<pair<string, string>, bool>> testcases = {
+        {{"a", "a"}, true},
+        {{"a", "b"}, false},
+        {{"a", "ab"}, false},
+        {{"a*", "aaaaaaaaaaa"}, true},
+        {{"a*", "aaaaaaaaaabaaaaaa"}, false},
+        {{"a|b|c", "a"}, true},
+        {{"a|b|c", "b"}, true},
+        {{"a|b|c", "d"}, false},
+        {{"[hc]at", "hat"}, true},
+        {{"[hc]at", "cat"}, true},
+        {{"[hc]at", "mat"}, false},
+        {{".at", "hat"}, true},
+        {{".at", "cat"}, true},
+        {{".at", "mat"}, true},
+        {{".at", "pat"}, true},
+        {{"([hc]at)?[mp]at", "mat"}, true},
+        {{"([hc]at)?[mp]at", "hat"}, false,},
+        {{"([hc]at)?[mp]at", "pat"}, true},
+        {{"([hc]at)?[mp]at", "catmat"}, true},
+        {{"[a-zA-Z0-9]", "5"}, true},
+        {{"[a-zA-Z0-9]", "G"}, true},
         // Regular Expression for matching a numeral (https://en.wikipedia.org/wiki/Regular_expression)
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1000000"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "-1"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e9"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-5"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1E-5"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-12233342"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "3.1415926535"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "237429342e24801"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "6.022e+23"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "e+23"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd123"},
-        {"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "123abcd"},
+        {{"[a-zA-Z0-9]", "@"}, false},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1000000"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "-1"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e9"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-5"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1E-5"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-12233342"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "3.1415926535"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "237429342e24801"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "6.022e+23"}, true},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "e+23"}, false},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd"}, false},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd123"}, false},
+        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "123abcd"}, false},
+        {{"(a|b)*abb(a|b)*", "aaaabbbbbb"}, true},
+        {{"(a*|b*)*", ""}, true},
     };
 
-    for (auto [pattern, input]: testcases) {
+    for (auto &[testcase, expected]: testcases) {
+        auto [pattern, input] = testcase;
         RegularExpression regex(pattern);
-        bool is_match = regex.match(input);
-        cout << pattern << " " << input << ": " << (is_match? "match": "no match") << endl;
+        bool answer = regex.match(input);
+        if (answer != expected) {
+            cout << "Failed Testcase (" << pattern << ", " << input << ")\n"
+                 << "\tExpected: " << (expected? "match": "no_match") 
+                 << " but found " << (answer? "match": "no_match") << endl;
+        }
     }
 }
 
