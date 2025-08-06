@@ -18,17 +18,15 @@ BNF Grammar of Regular Expressions
 <elementary-RE>	::=	<group> | <any> | <char> | <set>
 <group>	::=	"(" <RE> ")"
 <any>	::=	"."
+<char>	::=	any non metacharacter | "\" metacharacter
 <set>	::=	"[" <set-items> "]" | "[^" <set-items> "]"
 <set-items>	::=	<set-item> | <set-item> <set-items>
 <set-item>	::=	<char> <range>
 <range>	::=	"-" <char> | <empty>
-<char>	::=	any non metacharacter | "\" metacharacter
+<set-char>	::=	any character
 */ 
 class RegularExpression {
 private:
-    string pattern;
-    int parser_index = 0;
-
     enum EngineState {
         REGEX,
         EPSILON_NFA,
@@ -36,13 +34,11 @@ private:
         DFA,
         MINIMIZED_DFA
     };
-
     EngineState engine_state = REGEX;
 
     const int epsilon = 256;
     vector<map<int, set<int>>> epsilon_nfa_transition; 
     pair<int, int> epsilon_nfa_start_end;
-
     int make_epsilon_nfa_node() {
         int node = epsilon_nfa_transition.size();
         epsilon_nfa_transition.push_back(map<int, set<int>>());
@@ -59,7 +55,6 @@ private:
 
     vector<map<int, int>> dfa_transition; 
     pair<int, set<int>> dfa_start_end;
-
     int make_dfa_node() {
         int node = dfa_transition.size();
         dfa_transition.push_back(map<int, int>());
@@ -68,12 +63,14 @@ private:
 
     vector<map<int, int>> minimized_dfa_transition; 
     pair<int, set<int>> minimized_dfa_start_end;
-
     int make_minimized_dfa_node() {
         int node = minimized_dfa_transition.size();
         minimized_dfa_transition.push_back(map<int, int>());
         return node;
     }
+
+    string pattern;
+    int parser_index = 0;
 
     int parser_peek() {
         if (parser_index == (int) pattern.size()) {
@@ -258,6 +255,107 @@ private:
         return {-1, -1};
     }
 
+    pair<int, int> parse_char() {
+        const string meta_characters = "[]\\.^$*+?{}|()"; // special characters which already have a special meaning before escaping
+        const string special_characters = "wWsSdDabfnrtv"; // normal characters which have a special meaning after escaping
+        const string white_space = "\t\n\f\r ";
+        if (parser_peek() == '\\') {
+            parser_match('\\');
+
+            int c = parser_match_one_of(meta_characters + special_characters);
+
+            if (meta_characters.find(c) != string::npos) {
+                int start = make_epsilon_nfa_node();
+                int end = make_epsilon_nfa_node();
+                epsilon_nfa_transition[start][c].insert(end);
+    
+                return {start, end};
+            } else if (special_characters.find(c) != string::npos) {
+                int start = make_epsilon_nfa_node();
+                int end = make_epsilon_nfa_node();
+                switch (c) {
+                    case 'w':
+                        for (int i = 0; i < 256; i++) {
+                            if (('a' <= i && i <= 'z') || ('A' <= i && i <= 'Z') || ('0' <= i && i <= '9') || (i == '_')) {
+                                epsilon_nfa_transition[start][i].insert(end);
+                            }
+                        }
+                        break;
+                    case 'W':
+                        for (int i = 0; i < 256; i++) {
+                            if (!(('a' <= i && i <= 'z') || ('A' <= i && i <= 'Z') || ('0' <= i && i <= '9') || (i == '_'))) {
+                                epsilon_nfa_transition[start][i].insert(end);
+                            }
+                        }
+                        break;
+                    case 's':
+                        for (auto i: white_space) {
+                            epsilon_nfa_transition[start][i].insert(end);
+                        }
+                        break;
+                    case 'S':
+                        for (int i = 0; i < 256; i++) {
+                            if (white_space.find(char(i)) == string::npos) {
+                                epsilon_nfa_transition[start][i].insert(end);
+                            }
+                        }
+                        break;
+                    case 'd':
+                        for (int i = '0'; i <= '9'; i++) {
+                            epsilon_nfa_transition[start][i].insert(end);
+                        }
+                        break;
+                    case 'D':
+                        for (int i = 0; i < 256; i++) {
+                            if (!('0' <= i && i <= '9')) {
+                                epsilon_nfa_transition[start][i].insert(end);
+                            }
+                        }
+                        break;
+                    case 'a':
+                        epsilon_nfa_transition[start]['\a'].insert(end);
+                        break;
+                    case 'b':
+                        epsilon_nfa_transition[start]['\b'].insert(end);
+                        break;
+                    case 'f':
+                        epsilon_nfa_transition[start]['\f'].insert(end);
+                        break;
+                    case 'n':
+                        epsilon_nfa_transition[start]['\n'].insert(end);
+                        break;
+                    case 'r':
+                        epsilon_nfa_transition[start]['\r'].insert(end);
+                        break;
+                    case 't':
+                        epsilon_nfa_transition[start]['\t'].insert(end);
+                        break;
+                    case 'v':
+                        epsilon_nfa_transition[start]['\v'].insert(end);
+                        break;
+                    default:
+                        assert(false);
+                        break;
+                }
+
+                return {start, end};
+            } else {
+                assert(false);
+            }
+        } else if (0 <= parser_peek() && parser_peek() < 256 && meta_characters.find(parser_peek()) == string::npos) {
+            int c = parser_match_none_of(meta_characters);
+
+            int start = make_epsilon_nfa_node();
+            int end = make_epsilon_nfa_node();
+            epsilon_nfa_transition[start][c].insert(end);
+
+            return {start, end};
+        }
+
+        // parser_peek() is not meant to be parsed here
+        return {-1, -1};
+    }
+    
     pair<int, int> parse_set() {
         if (parser_peek() == '[') {
             parser_match('[');
@@ -309,7 +407,7 @@ private:
     }
 
     pair<int, int> parse_set_item() {
-        pair<int, int> char_res = parse_char();
+        pair<int, int> char_res = parse_set_char();
         if (char_res == pair<int, int>{-1, -1})
             return {-1, -1}; // not meant to be parsed here
 
@@ -323,7 +421,7 @@ private:
 
             auto [start, end] = lvalue;
 
-            pair<int, int> char_res = parse_char();
+            pair<int, int> char_res = parse_set_char();
 
             if (char_res == pair<int, int>{-1, -1}) { // treat '-' as a normal character
                 epsilon_nfa_transition[start]['-'].insert(end);
@@ -349,18 +447,54 @@ private:
         return lvalue; // <empty> case
     }
 
-    pair<int, int> parse_char() {
-        const string meta_characters = "[]\\.^$*+?{}|()";
+    pair<int, int> parse_set_char() {
+        const string meta_characters = "[]\\"; // special characters which already have a special meaning before escaping
+        const string special_characters = "abfnrtv"; // normal characters which have a special meaning after escaping
         if (parser_peek() == '\\') {
             parser_match('\\');
 
-            int c = parser_match_one_of(meta_characters);
+            int c = parser_match_one_of(meta_characters + special_characters);
 
-            int start = make_epsilon_nfa_node();
-            int end = make_epsilon_nfa_node();
-            epsilon_nfa_transition[start][c].insert(end);
+            if (meta_characters.find(c) != string::npos) {
+                int start = make_epsilon_nfa_node();
+                int end = make_epsilon_nfa_node();
+                epsilon_nfa_transition[start][c].insert(end);
+    
+                return {start, end};
+            } else if (special_characters.find(c) != string::npos) {
+                int start = make_epsilon_nfa_node();
+                int end = make_epsilon_nfa_node();
+                switch (c) {
+                    case 'a':
+                        epsilon_nfa_transition[start]['\a'].insert(end);
+                        break;
+                    case 'b':
+                        epsilon_nfa_transition[start]['\b'].insert(end);
+                        break;
+                    case 'f':
+                        epsilon_nfa_transition[start]['\f'].insert(end);
+                        break;
+                    case 'n':
+                        epsilon_nfa_transition[start]['\n'].insert(end);
+                        break;
+                    case 'r':
+                        epsilon_nfa_transition[start]['\r'].insert(end);
+                        break;
+                    case 't':
+                        epsilon_nfa_transition[start]['\t'].insert(end);
+                        break;
+                    case 'v':
+                        epsilon_nfa_transition[start]['\v'].insert(end);
+                        break;
+                    default:
+                        assert(false);
+                        break;
+                }
 
-            return {start, end};
+                return {start, end};
+            } else {
+                assert(false);
+            }
         } else if (0 <= parser_peek() && parser_peek() < 256 && meta_characters.find(parser_peek()) == string::npos) {
             int c = parser_match_none_of(meta_characters);
 
@@ -864,22 +998,27 @@ void run_testcases() {
         {{"([hc]at)?[mp]at", "catmat"}, true},
         {{"[a-zA-Z0-9]", "5"}, true},
         {{"[a-zA-Z0-9]", "G"}, true},
+        {{"\\w*", "0123"}, true},
+        {{"\\w*", "ZYX"}, true},
+        {{"\\w*", "abcd"}, true},
+        {{"\\w*", "abcdef_ABCDEF___01234"}, true},
+        {{"\\w*", "0+1-2"}, false},
         // Regular Expression for matching a numeral (https://en.wikipedia.org/wiki/Regular_expression)
         {{"[a-zA-Z0-9]", "@"}, false},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1000000"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "-1"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e9"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-5"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1E-5"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "1e-12233342"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "3.1415926535"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "237429342e24801"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "6.022e+23"}, true},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "e+23"}, false},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd"}, false},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "abcd123"}, false},
-        {{"[\\+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][\\+-]?[0-9]+)?", "123abcd"}, false},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "1"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "1000000"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "-1"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "1e9"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "1e-5"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "1E-5"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "1e-12233342"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "3.1415926535"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "237429342e24801"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "6.022e+23"}, true},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "e+23"}, false},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "abcd"}, false},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "abcd123"}, false},
+        {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "123abcd"}, false},
         {{"(a|b)*abb(a|b)*", "aaaabbbbbb"}, true},
         {{"(a*|b*)*", ""}, true},
     };
@@ -887,7 +1026,6 @@ void run_testcases() {
     for (auto &[testcase, expected]: testcases) {
         auto [pattern, input] = testcase;
         RegularExpression regex(pattern);
-        regex.generate_graphviz_files();
         bool answer = regex.match(input);
         if (answer != expected) {
             cout << "Failed Testcase (" << pattern << ", " << input << ")\n"
