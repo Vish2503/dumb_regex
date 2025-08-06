@@ -11,3 +11,4 @@
 - https://en.wikipedia.org/wiki/Powerset_construction
 - https://en.wikipedia.org/wiki/DFA_minimization
 - https://web.cecs.pdx.edu/~harry/compilers/slides/LexicalPart4.pdf
+- https://graphviz.org/Gallery/directed/fsm.html

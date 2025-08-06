@@ -1,10 +1,10 @@
 #include <iostream>
 #include <vector>
 #include <map>
-#include <map>
-#include <set>
+#include <algorithm>
 #include <set>
 #include <cassert>
+#include <fstream>
 using namespace std;
 
 /*
@@ -604,26 +604,6 @@ private:
         minimized_dfa_start_end = make_pair(minimized_dfa_start, minimized_dfa_end);
         engine_state = MINIMIZED_DFA;
     }
-public:
-    RegularExpression(string p) : pattern(p) {
-        generate_minimized_dfa();
-    }
-
-    bool match(string input) {
-        switch (engine_state) {
-            case EPSILON_NFA:
-                return match_epsilon_nfa(input);
-            case NFA:
-                return match_nfa(input);
-            case DFA:
-                return match_dfa(input);
-            case MINIMIZED_DFA:
-                return match_minimized_dfa(input);
-            default:
-                assert(false);
-                return false;
-        }
-    }
 
     bool match_epsilon_nfa(string input) {
         auto [start, end] = epsilon_nfa_start_end;
@@ -690,6 +670,174 @@ public:
 
         return end.find(curr) != end.end();
     }
+public:
+    RegularExpression(string p) : pattern(p) {
+        generate_minimized_dfa();
+    }
+
+    bool match(string input) {
+        switch (engine_state) {
+            case EPSILON_NFA:
+                return match_epsilon_nfa(input);
+            case NFA:
+                return match_nfa(input);
+            case DFA:
+                return match_dfa(input);
+            case MINIMIZED_DFA:
+                return match_minimized_dfa(input);
+            default:
+                assert(false);
+                return false;
+        }
+    }
+
+    void generate_graphviz_files() {
+        auto compress_label = [](string label) {
+            sort(label.begin(), label.end());
+            int n = label.size();
+            
+            string new_label;
+            int start = 0;
+            while (start < n) {
+                int end = start + 1;
+                while (end < n && label[end] == label[end - 1] + 1) end++;
+                if (end - start == 1)
+                    new_label += label[start];
+                else if (end - start == 2)
+                    new_label += string{label[start], ' ',label[end - 1]};
+                else
+                    new_label += string{label[start], '-', label[end - 1]};
+                new_label += " ";
+                start = end;
+            }
+            new_label.pop_back();
+
+            return new_label;
+        };
+        
+        if (engine_state >= EPSILON_NFA) {
+            ofstream fout("graphviz/epsilon_nfa.gv");
+            map<pair<int, int>, string> labels;
+            for (int i = 0; i < (int) epsilon_nfa_transition.size(); i++) {
+                for (auto [alphabet, next_states]: epsilon_nfa_transition[i]) {
+                    for (auto next: next_states) {
+                        if (next == 0) continue; // ignore transition to dead state
+                        auto edge = make_pair(i, next);
+                        labels[edge] += (alphabet == epsilon? "e": string(1, alphabet));
+                    }
+                }
+            }
+            
+            // compress labels
+            for (auto &[_, label]: labels) {
+                label = compress_label(label);
+            }
+    
+            fout << "digraph {\n\trankdir=LR;\n\tnode [shape = point]; _;\n\tnode [shape = doublecircle]; ";
+            fout << epsilon_nfa_start_end.second;
+            fout << ";\n\tnode [shape = circle];\n\t_ -> ";
+            fout << epsilon_nfa_start_end.first << ";\n";
+            for (auto [pair, l]: labels) {
+                auto [curr, next] = pair;
+                fout << '\t' << curr << " -> " << next << " [label = \"" << l << "\"];" << endl;
+            }
+            fout << "}" << endl;
+    
+            fout.close();
+        } // epsilon_nfa
+        
+        if (engine_state >= NFA) {
+            ofstream fout("graphviz/nfa.gv");
+            map<pair<int, int>, string> labels;
+            for (int i = 0; i < (int) nfa_transition.size(); i++) {
+                for (auto [alphabet, next_states]: nfa_transition[i]) {
+                    for (auto next: next_states) {
+                        if (next == 0) continue; // ignore transition to dead state
+                        auto edge = make_pair(i, next);
+                        labels[edge] += (alphabet == epsilon? "e": string(1, alphabet));
+                    }
+                }
+            }
+
+            // compress labels
+            for (auto &[_, label]: labels) {
+                label = compress_label(label);
+            }
+    
+            fout << "digraph {\n\trankdir=LR;\n\tnode [shape = point]; _;\n\tnode [shape = doublecircle]; ";
+            for (auto end_state: nfa_start_end.second)
+                fout << end_state << " ";
+            fout << ";\n\tnode [shape = circle];\n\t_ -> ";
+            fout << nfa_start_end.first << ";\n";
+            for (auto [pair, l]: labels) {
+                auto [curr, next] = pair;
+                fout << '\t' << curr << " -> " << next << " [label = \"" << l << "\"];" << endl;
+            }
+            fout << "}" << endl;
+    
+            fout.close();
+        } // nfa
+        
+        if (engine_state >= DFA) {
+            ofstream fout("graphviz/dfa.gv");
+            map<pair<int, int>, string> labels;
+            for (int i = 0; i < (int) dfa_transition.size(); i++) {
+                for (auto [alphabet, next]: dfa_transition[i]) {
+                    if (next == 0) continue; // ignore transition to dead state
+                    auto edge = make_pair(i, next);
+                    labels[edge] += (alphabet == epsilon? "e": string(1, alphabet));
+                }
+            }
+
+            // compress labels
+            for (auto &[_, label]: labels) {
+                label = compress_label(label);
+            }
+    
+            fout << "digraph {\n\trankdir=LR;\n\tnode [shape = point]; _;\n\tnode [shape = doublecircle]; ";
+            for (auto end_state: dfa_start_end.second)
+                fout << end_state << " ";
+            fout << ";\n\tnode [shape = circle];\n\t_ -> ";
+            fout << dfa_start_end.first << ";\n";
+            for (auto [pair, l]: labels) {
+                auto [curr, next] = pair;
+                fout << '\t' << curr << " -> " << next << " [label = \"" << l << "\"];" << endl;
+            }
+            fout << "}" << endl;
+    
+            fout.close();
+        } // dfa
+        
+        if (engine_state >= MINIMIZED_DFA) {
+            ofstream fout("graphviz/minimized_dfa.gv");
+            map<pair<int, int>, string> labels;
+            for (int i = 0; i < (int) minimized_dfa_transition.size(); i++) {
+                for (auto [alphabet, next]: minimized_dfa_transition[i]) {
+                    if (next == 0) continue; // ignore transition to dead state
+                    auto edge = make_pair(i, next);
+                    labels[edge] += (alphabet == epsilon? "e": string(1, alphabet));
+                }
+            }
+
+            // compress labels
+            for (auto &[_, label]: labels) {
+                label = compress_label(label);
+            }
+    
+            fout << "digraph {\n\trankdir=LR;\n\tnode [shape = point]; _;\n\tnode [shape = doublecircle]; ";
+            for (auto end_state: minimized_dfa_start_end.second)
+                fout << end_state << " ";
+            fout << ";\n\tnode [shape = circle];\n\t_ -> ";
+            fout << minimized_dfa_start_end.first << ";\n";
+            for (auto [pair, l]: labels) {
+                auto [curr, next] = pair;
+                fout << '\t' << curr << " -> " << next << " [label = \"" << l << "\"];" << endl;
+            }
+            fout << "}" << endl;
+    
+            fout.close();
+        } // minimized_dfa
+    }
 };
 
 
@@ -739,6 +887,7 @@ void run_testcases() {
     for (auto &[testcase, expected]: testcases) {
         auto [pattern, input] = testcase;
         RegularExpression regex(pattern);
+        regex.generate_graphviz_files();
         bool answer = regex.match(input);
         if (answer != expected) {
             cout << "Failed Testcase (" << pattern << ", " << input << ")\n"
