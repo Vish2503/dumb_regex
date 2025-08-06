@@ -7,3 +7,7 @@
 - https://web.archive.org/web/20090129224504/http://faqts.com/knowledge_base/view.phtml/aid/25718/fid/200
 - https://en.wikipedia.org/wiki/Left_recursion
 - https://github.com/lotabout/write-a-C-interpreter
+- https://swtch.com/~rsc/regexp/regexp1.html
+- https://en.wikipedia.org/wiki/Powerset_construction
+- https://en.wikipedia.org/wiki/DFA_minimization
+- https://web.cecs.pdx.edu/~harry/compilers/slides/LexicalPart4.pdf

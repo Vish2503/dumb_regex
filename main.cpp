@@ -493,56 +493,120 @@ private:
         auto [dfa_start, dfa_end] = dfa_start_end;
         int total_dfa_states = dfa_transition.size();
 
-        make_minimized_dfa_node(); // default dead state at 0
-
         // unreachable states
-        set<int> reachable_states;
-
-        set<int> current_states = {dfa_start};
-        while (!current_states.empty()) {
-            set<int> next_states;
-            for (auto state: current_states) {
-                for (auto &[_, next]: dfa_transition[state])
-                    if (reachable_states.find(next) == reachable_states.end())
-                        next_states.insert(next);
-            }
-            reachable_states.insert(next_states.begin(), next_states.end());
-            current_states = next_states;
-        }
-        
-        // dead states
-        set<int> dead_states;
-        
-        for (int i = 1; i < total_dfa_states; i++) {
-            set<int> current_states = {i};
-            
-            bool end_state_reachable = false;
-            vector<int> stack = {i};
-            while (!stack.empty()) {
-                int curr = stack.back();
-                stack.pop_back();
-                if (dfa_end.find(curr) != dfa_end.end()) {
-                    end_state_reachable = true;
-                    break;
+        set<int> reachable_states; {
+            reachable_states.insert(dfa_start);
+            set<int> current_states = {dfa_start};
+            while (!current_states.empty()) {
+                set<int> next_states;
+                for (auto state: current_states) {
+                    for (auto &[_, next]: dfa_transition[state])
+                        if (reachable_states.find(next) == reachable_states.end())
+                            next_states.insert(next);
                 }
-                for (auto [_, next]: dfa_transition[curr]) {
-                    if (current_states.find(next) == current_states.end()) {
-                        current_states.insert(next);
-                        stack.push_back(next);
+                reachable_states.insert(next_states.begin(), next_states.end());
+                current_states = next_states;
+            }
+        }
+
+        // dead states
+        set<int> dead_states; { 
+            for (int i = 1; i < total_dfa_states; i++) {
+                set<int> current_states = {i};
+                
+                bool end_state_reachable = false;
+                vector<int> stack = {i};
+                while (!stack.empty()) {
+                    int curr = stack.back();
+                    stack.pop_back();
+                    if (dfa_end.find(curr) != dfa_end.end()) {
+                        end_state_reachable = true;
+                        break;
+                    }
+                    for (auto [_, next]: dfa_transition[curr]) {
+                        if (current_states.find(next) == current_states.end()) {
+                            current_states.insert(next);
+                            stack.push_back(next);
+                        }
                     }
                 }
-            }
 
-            if (!end_state_reachable)
-                dead_states.insert(i);
+                if (!end_state_reachable)
+                    dead_states.insert(i);
+            }
         }
 
         // non distinguishable states
-        assert(false && "Not implemented yet");
+        map<int, int> group_mapping;
+        // initial set of groups is: {{single_dead_state}, {all_end_states}, {all_non_end_states}} we will refine this further 
+        group_mapping[0] = 0; // dead state
+        for (int i = 1; i < total_dfa_states; i++) { 
+            if (reachable_states.find(i) == reachable_states.end())
+                continue;
+            if (dead_states.find(i) != dead_states.end())
+                continue;
+
+            if (dfa_end.find(i) != dfa_end.end())
+                group_mapping[i] = 1;
+            else
+                group_mapping[i] = 2;
+        }
+
+        while (true) {
+            bool change = false;
+            for (int alphabet = 0; alphabet < 256; alphabet++) {
+                map<pair<int, int>, set<int>> group_to_states;
+                for (auto &[curr, _]: group_mapping) {
+                    int next = dfa_transition[curr][alphabet];
+                    group_to_states[make_pair(group_mapping[curr], group_mapping[next])].insert(curr);
+                }
+
+                map<int, int> new_group_mapping;
+                int group_number = 0;
+                for (auto &[_, states]: group_to_states) {
+                    for (auto state: states)
+                        new_group_mapping[state] = group_number;
+                    group_number++;
+                }
+
+                if (new_group_mapping != group_mapping) {
+                    group_mapping = new_group_mapping;
+                    change = true;
+                    break;
+                }
+            }
+
+            if (!change)
+                break;
+        }
+
+        make_minimized_dfa_node(); // default dead state at 0
+        
+        int largest_node = 0;
+        for (auto &[_, group]: group_mapping)
+            largest_node = max(largest_node, group);
+        
+        while (make_minimized_dfa_node() != largest_node);
+
+        int minimized_dfa_start = -1; 
+        set<int> minimized_dfa_end;
+        for (auto [dfa_state, group]: group_mapping) { // each group is a state in minimized_dfa
+            for (int alphabet = 0; alphabet < 256; alphabet++)
+                minimized_dfa_transition[group][alphabet] = group_mapping[dfa_transition[dfa_state][alphabet]];
+
+            if (dfa_state == dfa_start)
+                minimized_dfa_start = group;
+
+            if (dfa_end.find(dfa_state) != dfa_end.end())
+                minimized_dfa_end.insert(group);
+        }
+
+        minimized_dfa_start_end = make_pair(minimized_dfa_start, minimized_dfa_end);
+        engine_state = MINIMIZED_DFA;
     }
 public:
-    RegularExpression(string pattern) : pattern(pattern) {
-        generate_dfa();
+    RegularExpression(string p) : pattern(p) {
+        generate_minimized_dfa();
     }
 
     bool match(string input) {
@@ -680,6 +744,8 @@ void run_testcases() {
             cout << "Failed Testcase (" << pattern << ", " << input << ")\n"
                  << "\tExpected: " << (expected? "match": "no_match") 
                  << " but found " << (answer? "match": "no_match") << endl;
+        } else {
+            cout << "Passed Testcase (" << pattern << ", " << input << ")" << endl;
         }
     }
 }
