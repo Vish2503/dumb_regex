@@ -1,6 +1,6 @@
 # dumb_regex
 
-**dumb_regex** is an educational regular expression engine implemented in C++. It supports a basic subset of regex functionality and uses classic algorithms to convert regex patterns into a minimized DFA (Deterministic Finite Automaton). This project is not optimized for performance or edge cases. It is built purely for learning, experimenting, and understanding how regex engines work under the hood.
+**dumb_regex** is a regular expression engine implemented in C++. It supports a basic subset of regex functionality and uses classic algorithms to convert regex patterns into a minimized DFA (Deterministic Finite Automaton). This project is not optimized for performance or edge cases. It is built purely for learning, experimenting, and understanding how regex engines work under the hood.
 
 ## Quick Start
 
