@@ -14,7 +14,7 @@ BNF Grammar of Regular Expressions
 <REtail> ::= "|" <simple-RE> <REtail> |  <empty>
 <simple-RE>	::=	<basic-RE> <simple-REtail>
 <simple-REtail> ::= <basic-RE> <simple-REtail> | <empty>
-<basic-RE>	::=	<elementary-RE> "*" | <elementary-RE> "+" | <elementary-RE> "?" | <elementary-RE>
+<basic-RE>	::=	<elementary-RE> "*" | <elementary-RE> "+" | <elementary-RE> "?" | <elementary-RE> "{n,m}" | <elementary-RE>
 <elementary-RE>	::=	<group> | <any> | <char> | <set>
 <group>	::=	"(" <RE> ")"
 <any>	::=	"."
@@ -172,7 +172,7 @@ private:
         if (elementary_RE_res == pair<int, int>{-1, -1}) // not meant to be parsed here
             return {-1, -1}; 
 
-        if (parser_peek() != '*' && parser_peek() != '+' && parser_peek() != '?')
+        if (parser_peek() != '*' && parser_peek() != '+' && parser_peek() != '?' && parser_peek() != '{')
             return elementary_RE_res;
 
         auto [elementary_RE_start, elementary_RE_end] = elementary_RE_res;
@@ -180,23 +180,129 @@ private:
         int start = make_epsilon_nfa_node();
         int end = make_epsilon_nfa_node();
 
-        // common for all
-        epsilon_nfa_transition[start][epsilon].insert(elementary_RE_start);
-        epsilon_nfa_transition[elementary_RE_end][epsilon].insert(end);
-
         if (parser_peek() == '*') {
             parser_match('*');
+
+            epsilon_nfa_transition[start][epsilon].insert(elementary_RE_start);
+            epsilon_nfa_transition[elementary_RE_end][epsilon].insert(end);
             
             epsilon_nfa_transition[elementary_RE_end][epsilon].insert(elementary_RE_start);
             epsilon_nfa_transition[start][epsilon].insert(end);
         } else if (parser_peek() == '+') {
             parser_match('+');
+
+            epsilon_nfa_transition[start][epsilon].insert(elementary_RE_start);
+            epsilon_nfa_transition[elementary_RE_end][epsilon].insert(end);
             
             epsilon_nfa_transition[elementary_RE_end][epsilon].insert(elementary_RE_start);
         } else if (parser_peek() == '?') {
             parser_match('?');
             
+            epsilon_nfa_transition[start][epsilon].insert(elementary_RE_start);
+            epsilon_nfa_transition[elementary_RE_end][epsilon].insert(end);
+
             epsilon_nfa_transition[start][epsilon].insert(end);
+        } else if (parser_peek() == '{') {
+            parser_match('{');
+
+            const string digits = "0123456789";
+
+            int n = 0, m = 0;
+            while ('0' <= parser_peek() && parser_peek() <= '9') {
+                int c = parser_match_one_of(digits);
+                n = n * 10 + (c - '0');
+            }
+
+            if (parser_peek() == ',') {
+                parser_match(',');
+
+                if ('0' <= parser_peek() && parser_peek() <= '9') {
+                    m = 0;
+                    while ('0' <= parser_peek() && parser_peek() <= '9') {
+                        int c = parser_match_one_of(digits);
+                        m = m * 10 + (c - '0');
+                    }
+                } else {
+                    m = -1; // placeholder for {n,}
+                }
+            } else {
+                m = n;
+            }
+
+            parser_match('}');
+
+            if (m != -1 && m < n) {
+                cerr << "Out of order range found in the pattern at index " << parser_index << endl;
+                exit(1);
+            }
+
+            if (n == 0) {
+                epsilon_nfa_transition[start][epsilon].insert(end);
+            }
+
+            auto repeated_elementary_RE_start = -1;
+            auto repeated_elementary_RE_end = -1;
+
+            for (int i = 1; i <= n; i++) {
+                auto [elementary_RE_copy_start, elementary_RE_copy_end] = make_deep_copy(elementary_RE_start, elementary_RE_end);
+
+                if (repeated_elementary_RE_start == -1 && repeated_elementary_RE_end == -1) {
+                    repeated_elementary_RE_start = elementary_RE_copy_start; 
+                    repeated_elementary_RE_end = elementary_RE_copy_end; 
+                } else {
+                    epsilon_nfa_transition[repeated_elementary_RE_end][epsilon].insert(elementary_RE_copy_start);
+                    repeated_elementary_RE_end = elementary_RE_copy_end;
+                }
+            }
+
+            if (m == -1) {
+                auto [elementary_RE_copy_start, elementary_RE_copy_end] = make_deep_copy(elementary_RE_start, elementary_RE_end);
+
+                // similar to *
+                int new_elementary_RE_copy_start = make_epsilon_nfa_node();
+                int new_elementary_RE_copy_end = make_epsilon_nfa_node();
+
+                epsilon_nfa_transition[new_elementary_RE_copy_start][epsilon].insert(elementary_RE_copy_start);
+                epsilon_nfa_transition[elementary_RE_copy_end][epsilon].insert(new_elementary_RE_copy_end);
+
+                epsilon_nfa_transition[elementary_RE_copy_end][epsilon].insert(elementary_RE_copy_start);
+                epsilon_nfa_transition[new_elementary_RE_copy_start][epsilon].insert(new_elementary_RE_copy_end);
+
+                if (repeated_elementary_RE_start == -1 && repeated_elementary_RE_end == -1) {
+                    repeated_elementary_RE_start = new_elementary_RE_copy_start; 
+                    repeated_elementary_RE_end = new_elementary_RE_copy_end; 
+                } else {
+                    epsilon_nfa_transition[repeated_elementary_RE_end][epsilon].insert(new_elementary_RE_copy_start);
+                    repeated_elementary_RE_end = new_elementary_RE_copy_end;
+                }
+            }
+
+
+            for (int i = n + 1; i <= m; i++) {
+                auto [elementary_RE_copy_start, elementary_RE_copy_end] = make_deep_copy(elementary_RE_start, elementary_RE_end);
+
+                // similar to ?
+                int new_elementary_RE_copy_start = make_epsilon_nfa_node();
+                int new_elementary_RE_copy_end = make_epsilon_nfa_node();
+
+                epsilon_nfa_transition[new_elementary_RE_copy_start][epsilon].insert(elementary_RE_copy_start);
+                epsilon_nfa_transition[elementary_RE_copy_end][epsilon].insert(new_elementary_RE_copy_end);
+
+                epsilon_nfa_transition[new_elementary_RE_copy_start][epsilon].insert(new_elementary_RE_copy_end);
+
+                if (repeated_elementary_RE_start == -1 && repeated_elementary_RE_end == -1) {
+                    repeated_elementary_RE_start = new_elementary_RE_copy_start; 
+                    repeated_elementary_RE_end = new_elementary_RE_copy_end; 
+                } else {
+                    epsilon_nfa_transition[repeated_elementary_RE_end][epsilon].insert(new_elementary_RE_copy_start);
+                    repeated_elementary_RE_end = new_elementary_RE_copy_end;
+                }
+            }
+            
+            if (repeated_elementary_RE_start != -1 && repeated_elementary_RE_end != -1) {
+                epsilon_nfa_transition[start][epsilon].insert(repeated_elementary_RE_start);
+                epsilon_nfa_transition[repeated_elementary_RE_end][epsilon].insert(end);
+            }
         } else {
             assert(false);
         }
@@ -507,6 +613,31 @@ private:
 
         // parser_peek() is not meant to be parsed here
         return {-1, -1};
+    }
+
+    pair<int, int> make_deep_copy(int start, int end) {
+        map<int, int> mappings;
+        mappings[start] = make_epsilon_nfa_node();
+
+        vector<int> stack = {start};
+        while (!stack.empty()) {
+            int curr = stack.back();
+            stack.pop_back();
+            
+            assert(mappings.find(curr) != mappings.end());
+
+            for (int alphabet = 0; alphabet <= 256; alphabet++) {
+                for (auto next: epsilon_nfa_transition[curr][alphabet]) {
+                    if (mappings.find(next) == mappings.end()) {
+                        mappings[next] = make_epsilon_nfa_node();
+                        stack.push_back(next);
+                    }
+                    epsilon_nfa_transition[mappings[curr]][alphabet].insert(mappings[next]);
+                }
+            }
+        }
+
+        return make_pair(mappings[start], mappings[end]);
     }
 
     void epsilon_closure(int curr, set<int>& res) {
@@ -1021,6 +1152,23 @@ void run_testcases() {
         {{"[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?", "123abcd"}, false},
         {{"(a|b)*abb(a|b)*", "aaaabbbbbb"}, true},
         {{"(a*|b*)*", ""}, true},
+        {{"(a|b){0}", ""}, true},
+        {{"(a|b){0,0}", ""}, true},
+        {{"(a|b){0,0}", "a"}, false},
+        {{"(a|b){0,1}", ""}, true},
+        {{"(a|b){0,1}", "a"}, true},
+        {{"(a|b){0,1}", "ab"}, false},
+        {{"(a|b){2,4}", ""}, false},
+        {{"(a|b){2,4}", "a"}, false},
+        {{"(a|b){2,4}", "ba"}, true},
+        {{"(a|b){2,4}", "aba"}, true},
+        {{"(a|b){2,4}", "aaba"}, true},
+        {{"(a|b){2,4}", "abbaa"}, false},
+        {{"(a|b){2,}", "aaaaaaaaaaaa"}, true},
+        {{"(a|b){2}", "a"}, false},
+        {{"(a|b){2}", "abb"}, false},
+        {{"(a|b){10,10}", "abaaa"}, false},
+        {{"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "john.smith@example.com"}, true},
     };
 
     for (auto &[testcase, expected]: testcases) {
