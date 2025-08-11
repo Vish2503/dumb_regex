@@ -1,5 +1,8 @@
 # dumb_regex
 
+> [!WARNING]  
+> I am currently rewriting the project in rust for learning purposes! You can still access the original C++ Version under [cpp-version](./cpp-version) folder if you would like to check that out.
+
 **dumb_regex** is a regular expression engine implemented in C++. It supports a basic subset of regex functionality and uses classic algorithms to convert regex patterns into a minimized DFA (Deterministic Finite Automaton). This project is not optimized for performance or edge cases. It is built purely for learning, experimenting, and understanding how regex engines work under the hood.
 
 ## Quick Start
