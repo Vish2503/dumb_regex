@@ -86,28 +86,39 @@ impl EpsilonNFA {
         }
     }
 
-    fn make_deep_copy(&mut self, start: StateId, end: StateId) -> StatePair {
+    fn make_deep_copy(&mut self, start: StateId, end: StateId) -> Result<StatePair, String> {
         let mut mappings: HashMap<StateId, StateId> = HashMap::new();
         mappings.insert(start, self.add_state());
 
         let mut stack: Vec<StateId> = Vec::new();
         stack.push(start);
         while let Some(curr) = stack.pop() {
-            for c in u8::MIN..=u8::MAX {
-                let c = c as char;
-                let transitions = &self.transitions[curr];
-                if let Some(next_states) = transitions.get(&Alphabet::Char(c)) {
-                    for next in next_states {
-                        if !mappings.contains_key(&next) {
-                            mappings.insert(*next, self.add_state());
-                            stack.push(*next);
+            for (&alphabet, next_states) in &self.transitions[curr].clone() {
+                for &next in next_states {
+                    match mappings.get(&next) {
+                        Some(&_) => {}
+                        None => {
+                            mappings.insert(next, self.add_state());
+                            stack.push(next);
+                        }
+                    };
+                    match alphabet {
+                        Alphabet::Char(c) => {
+                            self.add_transition(mappings[&curr], c, mappings[&next]);
+                        }
+                        Alphabet::Epsilon => {
+                            self.add_epsilon_transition(mappings[&curr], mappings[&next])
                         }
                     }
                 }
             }
         }
 
-        (mappings[&start], mappings[&end])
+        let Some(&mappings_end) = mappings.get(&end) else {
+            return Err("Could not reach end in make_deep_copy()".to_string());
+        };
+
+        Ok((mappings[&start], mappings_end))
     }
 }
 
@@ -293,7 +304,6 @@ impl<'a> RegularExpression<'a> {
 
                         match self.parser_peek() {
                             Some(c) if digits.contains(c) => {
-                                m = 0;
                                 while digits.contains(self.parser_peek().unwrap_or_default()) {
                                     let c = self.parser_match_one_of(digits)?;
                                     m = m * 10
@@ -321,11 +331,106 @@ impl<'a> RegularExpression<'a> {
                 let start = self.epsilon_nfa.add_state();
                 let end = self.epsilon_nfa.add_state();
 
+                let (elementary_re_start, elementary_re_end) = elementary_re_res;
+
                 if n == 0 {
                     self.epsilon_nfa.add_epsilon_transition(start, end);
                 }
 
-                todo!()
+                let mut repeated_elementary_re_start: Option<StateId> = None;
+                let mut repeated_elementary_re_end: Option<StateId> = None;
+
+                for _ in 1..=n {
+                    let (elementary_re_copy_start, elementary_re_copy_end) = self
+                        .epsilon_nfa
+                        .make_deep_copy(elementary_re_start, elementary_re_end)?;
+
+                    if repeated_elementary_re_start == None && repeated_elementary_re_end == None {
+                        repeated_elementary_re_start = Some(elementary_re_copy_start);
+                        repeated_elementary_re_end = Some(elementary_re_copy_end);
+                    } else {
+                        self.epsilon_nfa.add_epsilon_transition(
+                            repeated_elementary_re_end.unwrap(),
+                            elementary_re_copy_start,
+                        );
+                        repeated_elementary_re_end = Some(elementary_re_copy_end);
+                    }
+                }
+
+                if m == -1 {
+                    let (elementary_re_copy_start, elementary_re_copy_end) = self
+                        .epsilon_nfa
+                        .make_deep_copy(elementary_re_start, elementary_re_end)?;
+
+                    let new_elementary_re_copy_start = self.epsilon_nfa.add_state();
+                    let new_elementary_re_copy_end = self.epsilon_nfa.add_state();
+
+                    self.epsilon_nfa.add_epsilon_transition(
+                        new_elementary_re_copy_start,
+                        elementary_re_copy_start,
+                    );
+                    self.epsilon_nfa
+                        .add_epsilon_transition(elementary_re_copy_end, new_elementary_re_copy_end);
+
+                    self.epsilon_nfa
+                        .add_epsilon_transition(elementary_re_copy_end, elementary_re_copy_start);
+                    self.epsilon_nfa.add_epsilon_transition(
+                        new_elementary_re_copy_start,
+                        new_elementary_re_copy_end,
+                    );
+
+                    if repeated_elementary_re_start == None && repeated_elementary_re_end == None {
+                        repeated_elementary_re_start = Some(new_elementary_re_copy_start);
+                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                    } else {
+                        self.epsilon_nfa.add_epsilon_transition(
+                            repeated_elementary_re_end.unwrap(),
+                            new_elementary_re_copy_start,
+                        );
+                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                    }
+                }
+
+                for _ in n + 1..=m {
+                    let (elementary_re_copy_start, elementary_re_copy_end) = self
+                        .epsilon_nfa
+                        .make_deep_copy(elementary_re_start, elementary_re_end)?;
+
+                    let new_elementary_re_copy_start = self.epsilon_nfa.add_state();
+                    let new_elementary_re_copy_end = self.epsilon_nfa.add_state();
+
+                    self.epsilon_nfa.add_epsilon_transition(
+                        new_elementary_re_copy_start,
+                        elementary_re_copy_start,
+                    );
+                    self.epsilon_nfa
+                        .add_epsilon_transition(elementary_re_copy_end, new_elementary_re_copy_end);
+
+                    self.epsilon_nfa.add_epsilon_transition(
+                        new_elementary_re_copy_start,
+                        new_elementary_re_copy_end,
+                    );
+
+                    if repeated_elementary_re_start == None && repeated_elementary_re_end == None {
+                        repeated_elementary_re_start = Some(new_elementary_re_copy_start);
+                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                    } else {
+                        self.epsilon_nfa.add_epsilon_transition(
+                            repeated_elementary_re_end.unwrap(),
+                            new_elementary_re_copy_start,
+                        );
+                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                    }
+                }
+
+                if repeated_elementary_re_start != None && repeated_elementary_re_end != None {
+                    self.epsilon_nfa
+                        .add_epsilon_transition(start, repeated_elementary_re_start.unwrap());
+                    self.epsilon_nfa
+                        .add_epsilon_transition(repeated_elementary_re_end.unwrap(), end);
+                }
+
+                Ok(Some((start, end)))
             }
             _ => Ok(Some(elementary_re_res)),
         }
