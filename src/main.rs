@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     iter::Peekable,
     process::exit,
     str::Chars,
@@ -13,6 +13,7 @@ enum Alphabet {
 type StateId = usize;
 type StatePair = (StateId, StateId);
 type NFATransition = HashMap<Alphabet, HashSet<StateId>>;
+type DFATransition = HashMap<Alphabet, StateId>;
 
 #[derive(Debug)]
 struct EpsilonNFA {
@@ -122,9 +123,51 @@ impl EpsilonNFA {
     }
 }
 
+#[derive(Debug)]
+struct NFA {
+    transitions: Vec<NFATransition>,
+    start: Option<StateId>,
+    end: Option<HashSet<StateId>>,
+}
+
+impl NFA {
+    fn new() -> Self {
+        Self {
+            transitions: Vec::new(),
+            start: None,
+            end: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DFA {
+    transitions: Vec<DFATransition>,
+    start: Option<StateId>,
+    end: Option<HashSet<StateId>>,
+}
+
+impl DFA {
+    fn new() -> Self {
+        Self {
+            transitions: Vec::new(),
+            start: None,
+            end: None,
+        }
+    }
+
+    fn add_state(&mut self) -> StateId {
+        let state: StateId = self.transitions.len();
+        self.transitions.push(DFATransition::new());
+        state
+    }
+}
+
 struct RegularExpression<'a> {
     pattern_iter: Peekable<Chars<'a>>,
     epsilon_nfa: EpsilonNFA,
+    nfa: NFA,
+    dfa: DFA,
 }
 
 impl<'a> RegularExpression<'a> {
@@ -132,6 +175,8 @@ impl<'a> RegularExpression<'a> {
         RegularExpression {
             pattern_iter: pattern.chars().peekable(),
             epsilon_nfa: EpsilonNFA::new(),
+            nfa: NFA::new(),
+            dfa: DFA::new(),
         }
     }
 
@@ -184,14 +229,15 @@ impl<'a> RegularExpression<'a> {
             Some(value) if value == '|' => {
                 self.parser_match('|')?;
 
-                let simple_re_res: Option<StatePair> = self.parse_simple_re()?;
+                let Some(simple_re_res) = self.parse_simple_re()? else {
+                    return Err("Unexpectedly found no simple_re after `|`".to_string());
+                };
 
                 let start: StateId = self.epsilon_nfa.add_state();
                 let end: StateId = self.epsilon_nfa.add_state();
 
                 let (up_start, up_end) = lvalue;
-                let (down_start, down_end) =
-                    simple_re_res.expect("parse_simple_re() returned None inside parse_re_tail");
+                let (down_start, down_end) = simple_re_res;
 
                 self.epsilon_nfa.add_epsilon_transition(start, up_start);
                 self.epsilon_nfa.add_epsilon_transition(start, down_start);
@@ -291,11 +337,11 @@ impl<'a> RegularExpression<'a> {
                 let mut n: i32 = 0;
                 let mut m: i32 = 0;
                 while digits.contains(self.parser_peek().unwrap_or_default()) {
-                    let c = self.parser_match_one_of(digits)?;
-                    n = n * 10
-                        + c.to_digit(10)
-                            .expect("Unexpected behaviour in parse_basic_re()")
-                            as i32;
+                    let c = self
+                        .parser_match_one_of(digits)?
+                        .to_digit(10)
+                        .expect("c must be one of the digits");
+                    n = n * 10 + c as i32;
                 }
 
                 match self.parser_peek() {
@@ -305,11 +351,11 @@ impl<'a> RegularExpression<'a> {
                         match self.parser_peek() {
                             Some(c) if digits.contains(c) => {
                                 while digits.contains(self.parser_peek().unwrap_or_default()) {
-                                    let c = self.parser_match_one_of(digits)?;
-                                    m = m * 10
-                                        + c.to_digit(10)
-                                            .expect("Unexpected behaviour in parse_basic_re()")
-                                            as i32;
+                                    let c = self
+                                        .parser_match_one_of(digits)?
+                                        .to_digit(10)
+                                        .expect("c must be one of the digits");
+                                    m = m * 10 + c as i32;
                                 }
                             }
                             _ => {
@@ -660,7 +706,7 @@ impl<'a> RegularExpression<'a> {
             .epsilon_nfa
             .transitions
             .get_disjoint_mut([old_start, start])
-            .expect("Unexpected error in parse_set_items");
+            .expect("old_start and start must always be non-overlapping indices inside the transitions vector");
 
         for &k in old_map.keys() {
             map.entry(k).or_default().insert(end);
@@ -795,7 +841,127 @@ impl<'a> RegularExpression<'a> {
         }
     }
 
-    fn check(self, input: &str) -> Result<bool, String> {
+    fn generate_nfa(&mut self) {
+        self.generate_epsilon_nfa();
+
+        let epsilon_nfa_start = self
+            .epsilon_nfa
+            .start
+            .expect("Epsilon NFA should be generated already");
+        let epsilon_nfa_end = self
+            .epsilon_nfa
+            .end
+            .expect("Epsilon NFA should be generated already");
+
+        let n = self.epsilon_nfa.transitions.len();
+        self.nfa.transitions.resize(n, Default::default());
+
+        let start = epsilon_nfa_start;
+        let mut end: HashSet<StateId> = HashSet::new();
+
+        let mut state_epsilon_closure: Vec<HashSet<StateId>> = Vec::new();
+        state_epsilon_closure.resize(n, Default::default());
+        for curr in 0..n {
+            self.epsilon_nfa
+                .epsilon_closure(curr, &mut state_epsilon_closure[curr]);
+
+            if state_epsilon_closure[curr].contains(&epsilon_nfa_end) {
+                end.insert(curr);
+            }
+        }
+
+        for curr in 0..n {
+            for &epsilon_state in &state_epsilon_closure[curr] {
+                for (&alphabet, next_states) in &self.epsilon_nfa.transitions[epsilon_state] {
+                    if let Alphabet::Char(_) = alphabet {
+                        for &next in next_states {
+                            self.nfa.transitions[curr]
+                                .entry(alphabet)
+                                .or_default()
+                                .extend(state_epsilon_closure[next].iter().copied());
+                        }
+                    }
+                }
+            }
+        }
+
+        self.nfa.start = Some(start);
+        self.nfa.end = Some(end);
+    }
+
+    fn generate_dfa(&mut self) {
+        self.generate_nfa();
+
+        let nfa_start = self
+            .nfa
+            .start
+            .expect("NFA should be generated already");
+        let nfa_end = self
+            .nfa
+            .end
+            .as_ref()
+            .expect("NFA should be generated already");
+
+        let mut subset_to_dfa_state: HashMap<BTreeSet<StateId>, StateId> = HashMap::new();
+
+        let dfa_start = self.dfa.add_state();
+        let start: BTreeSet<StateId> = BTreeSet::from([nfa_start]);
+        subset_to_dfa_state.insert(start.clone(), dfa_start);
+
+        let mut stack: Vec<BTreeSet<StateId>> = Vec::new();
+        stack.push(start);
+        while let Some(curr_states) = stack.pop() {
+            let &curr_dfa_state = subset_to_dfa_state.get(&curr_states).expect(
+                "curr_states should always be in subset_to_dfa_state due to a previous iteration",
+            );
+
+            let mut current_transitions: HashMap<Alphabet, BTreeSet<StateId>> = HashMap::new();
+            for curr in curr_states {
+                for (&alphabet, next_states) in &self.nfa.transitions[curr] {
+                    current_transitions
+                        .entry(alphabet)
+                        .or_default()
+                        .extend(next_states);
+                }
+            }
+
+            for (alphabet, next_states) in current_transitions {
+                let next_dfa_state = match subset_to_dfa_state.get(&next_states) {
+                    Some(&dfa_state) => dfa_state,
+                    None => {
+                        let state = self.dfa.add_state();
+                        subset_to_dfa_state.insert(next_states.clone(), state);
+                        stack.push(next_states);
+                        state
+                    }
+                };
+                self.dfa.transitions[curr_dfa_state].insert(alphabet, next_dfa_state);
+            }
+        }
+
+        let mut end_states: HashSet<StateId> = HashSet::new();
+        for (subset, &dfa_state) in &subset_to_dfa_state {
+            for &end in nfa_end {
+                if subset.contains(&end) {
+                    end_states.insert(dfa_state);
+                    break;
+                }
+            }
+        }
+
+        self.dfa.start = Some(dfa_start);
+        self.dfa.end = Some(end_states);
+    }
+
+    fn generate_minimized_dfa(&mut self) {
+        todo!()
+    }
+
+    fn generate(&mut self) {
+        self.generate_dfa();
+    }
+
+    fn check_epsilon_nfa(self, input: &str) -> Result<bool, String> {
         let Some(start) = self.epsilon_nfa.start else {
             return Err("Epsilon NFA start has not been initialized yet".to_string());
         };
@@ -826,13 +992,67 @@ impl<'a> RegularExpression<'a> {
 
         Ok(current_states.contains(&end))
     }
+
+    fn check_nfa(self, input: &str) -> Result<bool, String> {
+        let Some(start) = self.nfa.start else {
+            return Err("NFA start has not been initialized yet".to_string());
+        };
+        let Some(end_states) = self.nfa.end else {
+            return Err("NFA end has not been initialized yet".to_string());
+        };
+
+        let mut current_states: HashSet<StateId> = HashSet::new();
+        current_states.insert(start);
+        for c in input.chars() {
+            let mut next_states: HashSet<StateId> = HashSet::new();
+            for &curr in &current_states {
+                if let Some(adj) = self.nfa.transitions[curr].get(&Alphabet::Char(c)) {
+                    for &next in adj {
+                        next_states.insert(next);
+                    }
+                }
+            }
+            current_states = next_states;
+        }
+
+        for end in &end_states {
+            if current_states.contains(end) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn check_dfa(self, input: &str) -> Result<bool, String> {
+        let Some(start) = self.dfa.start else {
+            return Err("NFA start has not been initialized yet".to_string());
+        };
+        let Some(end_states) = self.dfa.end else {
+            return Err("NFA end has not been initialized yet".to_string());
+        };
+
+        let mut curr: StateId = start;
+        for c in input.chars() {
+            if let Some(&next) = self.dfa.transitions[curr].get(&Alphabet::Char(c)) {
+                curr = next;
+            } else {
+                return Ok(false);
+            }
+        }
+
+        Ok(end_states.contains(&curr))
+    }
+
+    fn check(self, input: &str) -> Result<bool, String> {
+        self.check_dfa(input)
+    }
 }
 
 fn main() {
-    let pattern: &str = "\\w";
+    let pattern: &str = "[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?";
     let mut re: RegularExpression = RegularExpression::new(pattern);
-    re.generate_epsilon_nfa();
-    match re.check("w") {
+    re.generate();
+    match re.check("1") {
         Ok(res) => {
             if res {
                 println!("matches");
@@ -853,188 +1073,188 @@ mod tests {
     #[test]
     fn basic_test_1() {
         let mut re: RegularExpression = RegularExpression::new("a");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("a"), Ok(true));
     }
 
     #[test]
     fn basic_test_2() {
         let mut re: RegularExpression = RegularExpression::new("a");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("b"), Ok(false));
     }
 
     #[test]
     fn basic_test_3() {
         let mut re: RegularExpression = RegularExpression::new("a");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("ab"), Ok(false));
     }
 
     #[test]
     fn star_test_1() {
         let mut re: RegularExpression = RegularExpression::new("a*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("aaaaaaaaaaa"), Ok(true));
     }
 
     #[test]
     fn star_test_2() {
         let mut re: RegularExpression = RegularExpression::new("a*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("aaaaaaaaaabaaaaaa"), Ok(false));
     }
 
     #[test]
     fn union_test_1() {
         let mut re: RegularExpression = RegularExpression::new("a|b|c");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("a"), Ok(true));
     }
 
     #[test]
     fn union_test_2() {
         let mut re: RegularExpression = RegularExpression::new("a|b|c");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("b"), Ok(true));
     }
 
     #[test]
     fn union_test_3() {
         let mut re: RegularExpression = RegularExpression::new("a|b|c");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("d"), Ok(false));
     }
 
     #[test]
     fn char_set_test_1() {
         let mut re: RegularExpression = RegularExpression::new("[hc]at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("hat"), Ok(true));
     }
 
     #[test]
     fn char_set_test_2() {
         let mut re: RegularExpression = RegularExpression::new("[hc]at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("cat"), Ok(true));
     }
 
     #[test]
     fn char_set_test_3() {
         let mut re: RegularExpression = RegularExpression::new("[hc]at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("mat"), Ok(false));
     }
 
     #[test]
     fn any_test_1() {
         let mut re: RegularExpression = RegularExpression::new(".at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("hat"), Ok(true));
     }
 
     #[test]
     fn any_test_2() {
         let mut re: RegularExpression = RegularExpression::new(".at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("cat"), Ok(true));
     }
 
     #[test]
     fn any_test_3() {
         let mut re: RegularExpression = RegularExpression::new(".at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("mat"), Ok(true));
     }
 
     #[test]
     fn any_test_4() {
         let mut re: RegularExpression = RegularExpression::new(".at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("pat"), Ok(true));
     }
 
     #[test]
     fn group_test_1() {
         let mut re: RegularExpression = RegularExpression::new("([hc]at)?[mp]at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("mat"), Ok(true));
     }
 
     #[test]
     fn group_test_2() {
         let mut re: RegularExpression = RegularExpression::new("([hc]at)?[mp]at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("hat"), Ok(false));
     }
 
     #[test]
     fn group_test_3() {
         let mut re: RegularExpression = RegularExpression::new("([hc]at)?[mp]at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("pat"), Ok(true));
     }
 
     #[test]
     fn group_test_4() {
         let mut re: RegularExpression = RegularExpression::new("([hc]at)?[mp]at");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("catmat"), Ok(true));
     }
 
     #[test]
     fn set_range_test_1() {
         let mut re: RegularExpression = RegularExpression::new("[a-zA-Z0-9]");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("5"), Ok(true));
     }
 
     #[test]
     fn set_range_test_2() {
         let mut re: RegularExpression = RegularExpression::new("[a-zA-Z0-9]");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("G"), Ok(true));
     }
 
     #[test]
     fn set_range_test_4() {
         let mut re: RegularExpression = RegularExpression::new("[a-zA-Z0-9]");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("@"), Ok(false));
     }
 
     #[test]
     fn special_char_test_1() {
         let mut re: RegularExpression = RegularExpression::new("\\w*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("0123"), Ok(true));
     }
     #[test]
     fn special_char_test_2() {
         let mut re: RegularExpression = RegularExpression::new("\\w*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("ZYX"), Ok(true));
     }
 
     #[test]
     fn special_char_test_3() {
         let mut re: RegularExpression = RegularExpression::new("\\w*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("abcd"), Ok(true));
     }
 
     #[test]
     fn special_char_test_4() {
         let mut re: RegularExpression = RegularExpression::new("\\w*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("abcdef_ABCDEF___01234"), Ok(true));
     }
 
     #[test]
     fn special_char_test_5() {
         let mut re: RegularExpression = RegularExpression::new("\\w*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("0+1-2"), Ok(false));
     }
 
@@ -1042,7 +1262,7 @@ mod tests {
     fn numeral_test_1() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("1"), Ok(true));
     }
 
@@ -1050,7 +1270,7 @@ mod tests {
     fn numeral_test_2() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("1000000"), Ok(true));
     }
 
@@ -1058,7 +1278,7 @@ mod tests {
     fn numeral_test_3() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("-1"), Ok(true));
     }
 
@@ -1066,7 +1286,7 @@ mod tests {
     fn numeral_test_4() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("1e9"), Ok(true));
     }
 
@@ -1074,7 +1294,7 @@ mod tests {
     fn numeral_test_5() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("1e-5"), Ok(true));
     }
 
@@ -1082,7 +1302,7 @@ mod tests {
     fn numeral_test_6() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("1E-5"), Ok(true));
     }
 
@@ -1090,7 +1310,7 @@ mod tests {
     fn numeral_test_7() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("1e-12233342"), Ok(true));
     }
 
@@ -1098,7 +1318,7 @@ mod tests {
     fn numeral_test_8() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("3.1415926535"), Ok(true));
     }
 
@@ -1106,7 +1326,7 @@ mod tests {
     fn numeral_test_9() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("237429342e24801"), Ok(true));
     }
 
@@ -1114,7 +1334,7 @@ mod tests {
     fn numeral_test_10() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("6.022e+23"), Ok(true));
     }
 
@@ -1122,7 +1342,7 @@ mod tests {
     fn numeral_test_11() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("e+23"), Ok(false));
     }
 
@@ -1130,7 +1350,7 @@ mod tests {
     fn numeral_test_12() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("abcd"), Ok(false));
     }
 
@@ -1138,7 +1358,7 @@ mod tests {
     fn numeral_test_13() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("abcd123"), Ok(false));
     }
 
@@ -1146,133 +1366,133 @@ mod tests {
     fn numeral_test_14() {
         let mut re: RegularExpression =
             RegularExpression::new("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("123abcd"), Ok(false));
     }
 
     #[test]
     fn ab_test_1() {
         let mut re: RegularExpression = RegularExpression::new("(a|b)*abb(a|b)*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("aaaabbbbbb"), Ok(true));
     }
 
     #[test]
     fn easy_test_1() {
         let mut re: RegularExpression = RegularExpression::new("(a*|b*)*");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check(""), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_1() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){0}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check(""), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_2() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){0,0}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check(""), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_3() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){0,0}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("a"), Ok(false));
     }
 
     #[test]
     fn counted_repetition_test_4() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){0,1}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check(""), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_5() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){0,1}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("a"), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_6() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){0,1}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("ab"), Ok(false));
     }
 
     #[test]
     fn counted_repetition_test_7() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2,4}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check(""), Ok(false));
     }
 
     #[test]
     fn counted_repetition_test_8() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2,4}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("a"), Ok(false));
     }
 
     #[test]
     fn counted_repetition_test_9() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2,4}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("ba"), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_10() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2,4}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("aba"), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_11() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2,4}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("aaba"), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_12() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2,4}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("abbaa"), Ok(false));
     }
 
     #[test]
     fn counted_repetition_test_13() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2,}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("aaaaaaaaaaaa"), Ok(true));
     }
 
     #[test]
     fn counted_repetition_test_14() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("a"), Ok(false));
     }
 
     #[test]
     fn counted_repetition_test_15() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){2}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("abb"), Ok(false));
     }
 
     #[test]
     fn counted_repetition_test_16() {
         let mut re: RegularExpression = RegularExpression::new("(a|b){10,10}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("abaaa"), Ok(false));
     }
 
@@ -1280,7 +1500,7 @@ mod tests {
     fn email_test_1() {
         let mut re: RegularExpression =
             RegularExpression::new("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}");
-        re.generate_epsilon_nfa();
+        re.generate();
         assert_eq!(re.check("john.smith@example.com"), Ok(true));
     }
 }
