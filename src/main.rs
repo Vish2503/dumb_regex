@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     iter::Peekable,
     process::exit,
     str::Chars,
@@ -16,13 +16,13 @@ type NFATransition = HashMap<Alphabet, HashSet<StateId>>;
 type DFATransition = HashMap<Alphabet, StateId>;
 
 #[derive(Debug)]
-struct EpsilonNFA {
+struct EpsilonNfa {
     transitions: Vec<NFATransition>,
     start: Option<StateId>,
     end: Option<StateId>,
 }
 
-impl EpsilonNFA {
+impl EpsilonNfa {
     fn new() -> Self {
         Self {
             transitions: Vec::new(),
@@ -40,7 +40,7 @@ impl EpsilonNFA {
     fn add_epsilon_transition(&mut self, from: StateId, to: StateId) {
         self.transitions[from]
             .entry(Alphabet::Epsilon)
-            .or_insert(HashSet::new())
+            .or_default()
             .insert(to);
     }
 
@@ -124,13 +124,13 @@ impl EpsilonNFA {
 }
 
 #[derive(Debug)]
-struct NFA {
+struct Nfa {
     transitions: Vec<NFATransition>,
     start: Option<StateId>,
     end: Option<HashSet<StateId>>,
 }
 
-impl NFA {
+impl Nfa {
     fn new() -> Self {
         Self {
             transitions: Vec::new(),
@@ -141,13 +141,36 @@ impl NFA {
 }
 
 #[derive(Debug)]
-struct DFA {
+struct Dfa {
     transitions: Vec<DFATransition>,
     start: Option<StateId>,
     end: Option<HashSet<StateId>>,
 }
 
-impl DFA {
+impl Dfa {
+    fn new() -> Self {
+        Self {
+            transitions: Vec::new(),
+            start: None,
+            end: None,
+        }
+    }
+
+    fn add_state(&mut self) -> StateId {
+        let state: StateId = self.transitions.len();
+        self.transitions.push(DFATransition::new());
+        state
+    }
+}
+
+#[derive(Debug)]
+struct MinimizedDfa {
+    transitions: Vec<DFATransition>,
+    start: Option<StateId>,
+    end: Option<HashSet<StateId>>,
+}
+
+impl MinimizedDfa {
     fn new() -> Self {
         Self {
             transitions: Vec::new(),
@@ -165,18 +188,20 @@ impl DFA {
 
 struct RegularExpression<'a> {
     pattern_iter: Peekable<Chars<'a>>,
-    epsilon_nfa: EpsilonNFA,
-    nfa: NFA,
-    dfa: DFA,
+    epsilon_nfa: EpsilonNfa,
+    nfa: Nfa,
+    dfa: Dfa,
+    minimized_dfa: MinimizedDfa,
 }
 
 impl<'a> RegularExpression<'a> {
     fn new(pattern: &'a str) -> Self {
         RegularExpression {
             pattern_iter: pattern.chars().peekable(),
-            epsilon_nfa: EpsilonNFA::new(),
-            nfa: NFA::new(),
-            dfa: DFA::new(),
+            epsilon_nfa: EpsilonNfa::new(),
+            nfa: Nfa::new(),
+            dfa: Dfa::new(),
+            minimized_dfa: MinimizedDfa::new(),
         }
     }
 
@@ -226,7 +251,7 @@ impl<'a> RegularExpression<'a> {
 
     fn parse_re_tail(&mut self, lvalue: StatePair) -> Result<StatePair, String> {
         match self.parser_peek() {
-            Some(value) if value == '|' => {
+            Some('|') => {
                 self.parser_match('|')?;
 
                 let Some(simple_re_res) = self.parse_simple_re()? else {
@@ -391,7 +416,9 @@ impl<'a> RegularExpression<'a> {
                         .epsilon_nfa
                         .make_deep_copy(elementary_re_start, elementary_re_end)?;
 
-                    if repeated_elementary_re_start == None && repeated_elementary_re_end == None {
+                    if repeated_elementary_re_start.is_none()
+                        && repeated_elementary_re_end.is_none()
+                    {
                         repeated_elementary_re_start = Some(elementary_re_copy_start);
                         repeated_elementary_re_end = Some(elementary_re_copy_end);
                     } else {
@@ -425,7 +452,9 @@ impl<'a> RegularExpression<'a> {
                         new_elementary_re_copy_end,
                     );
 
-                    if repeated_elementary_re_start == None && repeated_elementary_re_end == None {
+                    if repeated_elementary_re_start.is_none()
+                        && repeated_elementary_re_end.is_none()
+                    {
                         repeated_elementary_re_start = Some(new_elementary_re_copy_start);
                         repeated_elementary_re_end = Some(new_elementary_re_copy_end);
                     } else {
@@ -457,7 +486,9 @@ impl<'a> RegularExpression<'a> {
                         new_elementary_re_copy_end,
                     );
 
-                    if repeated_elementary_re_start == None && repeated_elementary_re_end == None {
+                    if repeated_elementary_re_start.is_none()
+                        && repeated_elementary_re_end.is_none()
+                    {
                         repeated_elementary_re_start = Some(new_elementary_re_copy_start);
                         repeated_elementary_re_end = Some(new_elementary_re_copy_end);
                     } else {
@@ -469,11 +500,13 @@ impl<'a> RegularExpression<'a> {
                     }
                 }
 
-                if repeated_elementary_re_start != None && repeated_elementary_re_end != None {
+                if let (Some(repeated_elementary_re_start), Some(repeated_elementary_re_end)) =
+                    (repeated_elementary_re_start, repeated_elementary_re_end)
+                {
                     self.epsilon_nfa
-                        .add_epsilon_transition(start, repeated_elementary_re_start.unwrap());
+                        .add_epsilon_transition(start, repeated_elementary_re_start);
                     self.epsilon_nfa
-                        .add_epsilon_transition(repeated_elementary_re_end.unwrap(), end);
+                        .add_epsilon_transition(repeated_elementary_re_end, end);
                 }
 
                 Ok(Some((start, end)))
@@ -615,7 +648,7 @@ impl<'a> RegularExpression<'a> {
                             start,
                             (u8::MIN..=u8::MAX)
                                 .map(|c| c as char)
-                                .filter(|c| !('0'..='9').contains(c)),
+                                .filter(|c| !c.is_ascii_digit()),
                             end,
                         );
 
@@ -847,11 +880,11 @@ impl<'a> RegularExpression<'a> {
         let epsilon_nfa_start = self
             .epsilon_nfa
             .start
-            .expect("Epsilon NFA should be generated already");
+            .expect("Epsilon Nfa should be generated already");
         let epsilon_nfa_end = self
             .epsilon_nfa
             .end
-            .expect("Epsilon NFA should be generated already");
+            .expect("Epsilon Nfa should be generated already");
 
         let n = self.epsilon_nfa.transitions.len();
         self.nfa.transitions.resize(n, Default::default());
@@ -861,11 +894,10 @@ impl<'a> RegularExpression<'a> {
 
         let mut state_epsilon_closure: Vec<HashSet<StateId>> = Vec::new();
         state_epsilon_closure.resize(n, Default::default());
-        for curr in 0..n {
-            self.epsilon_nfa
-                .epsilon_closure(curr, &mut state_epsilon_closure[curr]);
+        for (curr, curr_epsilon_closure) in state_epsilon_closure.iter_mut().enumerate() {
+            self.epsilon_nfa.epsilon_closure(curr, curr_epsilon_closure);
 
-            if state_epsilon_closure[curr].contains(&epsilon_nfa_end) {
+            if curr_epsilon_closure.contains(&epsilon_nfa_end) {
                 end.insert(curr);
             }
         }
@@ -892,15 +924,14 @@ impl<'a> RegularExpression<'a> {
     fn generate_dfa(&mut self) {
         self.generate_nfa();
 
-        let nfa_start = self
-            .nfa
-            .start
-            .expect("NFA should be generated already");
+        let nfa_start = self.nfa.start.expect("Nfa should be generated already");
         let nfa_end = self
             .nfa
             .end
             .as_ref()
-            .expect("NFA should be generated already");
+            .expect("Nfa should be generated already");
+
+        self.dfa.add_state();
 
         let mut subset_to_dfa_state: HashMap<BTreeSet<StateId>, StateId> = HashMap::new();
 
@@ -954,19 +985,150 @@ impl<'a> RegularExpression<'a> {
     }
 
     fn generate_minimized_dfa(&mut self) {
-        todo!()
+        self.generate_dfa();
+
+        let dfa_start = self.dfa.start.expect("Dfa should be generated already");
+        let dfa_end = self
+            .dfa
+            .end
+            .as_ref()
+            .expect("Dfa should be generated already");
+
+        let total_dfa_states = self.dfa.transitions.len();
+
+        let mut reachable_states: HashSet<StateId> = HashSet::from([dfa_start]);
+        let mut current_states: HashSet<StateId> = HashSet::from([dfa_start]);
+        while !current_states.is_empty() {
+            let mut next_states: HashSet<StateId> = HashSet::new();
+            for &state in &current_states {
+                for (&_alphabet, &next) in &self.dfa.transitions[state] {
+                    if !reachable_states.contains(&next) {
+                        next_states.insert(next);
+                    }
+                }
+            }
+            reachable_states.extend(next_states.iter().copied());
+            current_states = next_states;
+        }
+
+        let mut dead_states: HashSet<StateId> = HashSet::new();
+        for i in 0..total_dfa_states {
+            let mut current_states: HashSet<StateId> = HashSet::from([i]);
+
+            let mut end_state_reachable = false;
+            let mut stack: Vec<StateId> = Vec::from([i as StateId]);
+            while let Some(curr) = stack.pop() {
+                if dfa_end.contains(&curr) {
+                    end_state_reachable = true;
+                    break;
+                }
+                for (&_alphabet, &next) in &self.dfa.transitions[curr] {
+                    if !current_states.contains(&next) {
+                        current_states.insert(next);
+                        stack.push(next);
+                    }
+                }
+            }
+
+            if !end_state_reachable {
+                dead_states.insert(i as StateId);
+            }
+        }
+
+        let mut group_mapping: HashMap<StateId, StateId> = HashMap::new();
+        group_mapping.insert(0, 0);
+        for i in 0..total_dfa_states {
+            if !reachable_states.contains(&i) || dead_states.contains(&i) {
+                continue;
+            }
+
+            if dfa_end.contains(&i) {
+                group_mapping.insert(i, 1);
+            } else {
+                group_mapping.insert(i, 2);
+            }
+        }
+
+        loop {
+            let mut change = false;
+            for c in u8::MIN..=u8::MAX {
+                let c = c as char;
+                let mut group_to_states: BTreeMap<StatePair, HashSet<StateId>> = BTreeMap::new();
+                for &curr in group_mapping.keys() {
+                    let next = match self.dfa.transitions[curr].get(&Alphabet::Char(c)) {
+                        Some(&next) => next,
+                        None => 0,
+                    };
+                    group_to_states
+                        .entry((group_mapping[&curr], group_mapping[&next]))
+                        .or_default()
+                        .insert(curr);
+                }
+
+                let mut new_group_mapping: HashMap<StateId, StateId> = HashMap::new();
+                for (group_number, (&_, states)) in group_to_states.iter().enumerate() {
+                    for &state in states {
+                        new_group_mapping.insert(state, group_number);
+                    }
+                }
+
+                if new_group_mapping != group_mapping {
+                    group_mapping = new_group_mapping;
+                    change = true;
+                    break;
+                }
+            }
+
+            if !change {
+                break;
+            }
+        }
+
+        self.minimized_dfa.add_state();
+
+        let largest_node = group_mapping
+            .values()
+            .max()
+            .expect("there must be some nodes in minimized_dfa");
+
+        while self.minimized_dfa.add_state() != *largest_node {}
+
+        let mut minimized_dfa_start = 0;
+        let mut minimized_dfa_end: HashSet<StateId> = HashSet::new();
+        for (&dfa_state, &group) in &group_mapping {
+            for c in u8::MIN..=u8::MAX {
+                let c = c as char;
+                if let Some(next_dfa_state) =
+                    self.dfa.transitions[dfa_state].get(&Alphabet::Char(c))
+                {
+                    self.minimized_dfa.transitions[group]
+                        .insert(Alphabet::Char(c), group_mapping[next_dfa_state]);
+                }
+            }
+
+            if dfa_state == dfa_start {
+                minimized_dfa_start = group;
+            }
+
+            if dfa_end.contains(&dfa_state) {
+                minimized_dfa_end.insert(group);
+            }
+        }
+
+        self.minimized_dfa.start = Some(minimized_dfa_start);
+        self.minimized_dfa.end = Some(minimized_dfa_end);
     }
 
     fn generate(&mut self) {
-        self.generate_dfa();
+        self.generate_minimized_dfa();
     }
 
-    fn check_epsilon_nfa(self, input: &str) -> Result<bool, String> {
+    fn check_epsilon_nfa(&self, input: &str) -> Result<bool, String> {
         let Some(start) = self.epsilon_nfa.start else {
-            return Err("Epsilon NFA start has not been initialized yet".to_string());
+            return Err("Epsilon Nfa start has not been initialized yet".to_string());
         };
         let Some(end) = self.epsilon_nfa.end else {
-            return Err("Epsilon NFA end has not been initialized yet".to_string());
+            return Err("Epsilon Nfa end has not been initialized yet".to_string());
         };
 
         let mut epsilon_closure_start: HashSet<StateId> = HashSet::new();
@@ -993,12 +1155,12 @@ impl<'a> RegularExpression<'a> {
         Ok(current_states.contains(&end))
     }
 
-    fn check_nfa(self, input: &str) -> Result<bool, String> {
+    fn check_nfa(&self, input: &str) -> Result<bool, String> {
         let Some(start) = self.nfa.start else {
-            return Err("NFA start has not been initialized yet".to_string());
+            return Err("Nfa start has not been initialized yet".to_string());
         };
-        let Some(end_states) = self.nfa.end else {
-            return Err("NFA end has not been initialized yet".to_string());
+        let Some(ref end_states) = self.nfa.end else {
+            return Err("Nfa end has not been initialized yet".to_string());
         };
 
         let mut current_states: HashSet<StateId> = HashSet::new();
@@ -1015,7 +1177,7 @@ impl<'a> RegularExpression<'a> {
             current_states = next_states;
         }
 
-        for end in &end_states {
+        for end in end_states {
             if current_states.contains(end) {
                 return Ok(true);
             }
@@ -1023,12 +1185,12 @@ impl<'a> RegularExpression<'a> {
         Ok(false)
     }
 
-    fn check_dfa(self, input: &str) -> Result<bool, String> {
+    fn check_dfa(&self, input: &str) -> Result<bool, String> {
         let Some(start) = self.dfa.start else {
-            return Err("NFA start has not been initialized yet".to_string());
+            return Err("Nfa start has not been initialized yet".to_string());
         };
-        let Some(end_states) = self.dfa.end else {
-            return Err("NFA end has not been initialized yet".to_string());
+        let Some(ref end_states) = self.dfa.end else {
+            return Err("Nfa end has not been initialized yet".to_string());
         };
 
         let mut curr: StateId = start;
@@ -1043,8 +1205,31 @@ impl<'a> RegularExpression<'a> {
         Ok(end_states.contains(&curr))
     }
 
+    fn check_minimized_dfa(&self, input: &str) -> Result<bool, String> {
+        let Some(start) = self.minimized_dfa.start else {
+            return Err("Nfa start has not been initialized yet".to_string());
+        };
+        let Some(ref end_states) = self.minimized_dfa.end else {
+            return Err("Nfa end has not been initialized yet".to_string());
+        };
+
+        let mut curr: StateId = start;
+        for c in input.chars() {
+            if let Some(&next) = self.minimized_dfa.transitions[curr].get(&Alphabet::Char(c)) {
+                curr = next;
+            } else {
+                return Ok(false);
+            }
+        }
+
+        Ok(end_states.contains(&curr))
+    }
+
     fn check(self, input: &str) -> Result<bool, String> {
-        self.check_dfa(input)
+        self.check_epsilon_nfa(input)?;
+        self.check_nfa(input)?;
+        self.check_dfa(input)?;
+        self.check_minimized_dfa(input)
     }
 }
 
