@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     iter::Peekable,
+    ops::RangeInclusive,
     process::exit,
     str::Chars,
 };
@@ -62,17 +63,6 @@ impl EpsilonNfa {
                 .entry(Alphabet::Char(c))
                 .or_default()
                 .insert(to);
-        }
-    }
-
-    fn invert_transition(&mut self, from: StateId, to: StateId) {
-        for c in u8::MIN..=u8::MAX {
-            match self.transitions[from].remove(&Alphabet::Char(c as char)) {
-                Some(_) => continue,
-                None => {
-                    self.transitions[from].insert(Alphabet::Char(c as char), HashSet::from([to]));
-                }
-            }
         }
     }
 
@@ -707,14 +697,26 @@ impl<'a> RegularExpression<'a> {
                     false
                 };
 
-                let Some((start, end)) = self.parse_set_items()? else {
+                let Some(range) = self.parse_set_items()? else {
                     return Err("Empty character set found in the pattern.".to_string());
                 };
 
                 self.parser_match(']')?;
 
+                let start = self.epsilon_nfa.add_state();
+                let end = self.epsilon_nfa.add_state();
+
                 if negate {
-                    self.epsilon_nfa.invert_transition(start, end);
+                    self.epsilon_nfa.add_transition_range(
+                        start,
+                        (u8::MIN..=u8::MAX)
+                            .map(|c| c as char)
+                            .filter(|&c| !range.iter().any(|r| r.contains(&c))),
+                        end,
+                    );
+                } else {
+                    self.epsilon_nfa
+                        .add_transition_range(start, range.into_iter().flatten(), end);
                 }
 
                 Ok(Some((start, end)))
@@ -723,135 +725,74 @@ impl<'a> RegularExpression<'a> {
         }
     }
 
-    fn parse_set_items(&mut self) -> Result<Option<StatePair>, String> {
+    fn parse_set_items(&mut self) -> Result<Option<Vec<RangeInclusive<char>>>, String> {
         let Some(set_item_res) = self.parse_set_item()? else {
             return Ok(None);
         };
 
-        let Some(set_items_res) = self.parse_set_items()? else {
+        let Some(mut set_items_res) = self.parse_set_items()? else {
             return Ok(Some(set_item_res));
         };
 
-        let (old_start, _old_end) = set_items_res;
-        let (start, end) = set_item_res;
+        set_items_res.extend(set_item_res);
 
-        let [old_map, map] = self
-            .epsilon_nfa
-            .transitions
-            .get_disjoint_mut([old_start, start])
-            .expect("old_start and start must always be non-overlapping indices inside the transitions vector");
-
-        for &k in old_map.keys() {
-            map.entry(k).or_default().insert(end);
-        }
-
-        Ok(Some((start, end)))
+        Ok(Some(set_items_res))
     }
 
-    fn parse_set_item(&mut self) -> Result<Option<StatePair>, String> {
+    fn parse_set_item(&mut self) -> Result<Option<Vec<RangeInclusive<char>>>, String> {
         match self.parse_set_char()? {
             Some(char_res) => Ok(Some(self.parse_range(char_res)?)),
             _ => Ok(None),
         }
     }
 
-    fn parse_range(&mut self, lvalue: StatePair) -> Result<StatePair, String> {
+    fn parse_range(&mut self, lvalue: char) -> Result<Vec<RangeInclusive<char>>, String> {
         let Some('-') = self.parser_peek() else {
-            return Ok(lvalue);
+            return Ok(vec![lvalue..=lvalue]);
         };
 
         self.parser_match('-')?;
 
-        let (start, end) = lvalue;
-
         match self.parse_set_char()? {
-            None => {
-                self.epsilon_nfa.add_transition(start, '-', end);
-                Ok((start, end))
-            }
+            None => Ok(vec![lvalue..=lvalue, '-'..='-']),
             Some(char_res) => {
-                let range_start = match self.epsilon_nfa.transitions[start].keys().next() {
-                    Some(Alphabet::Char(c)) => *c as u8,
-                    _ => {
-                        return Err("Unexpected behaviour in parse_range()".to_string());
-                    }
-                };
-                let range_end = match self.epsilon_nfa.transitions[char_res.0].keys().next() {
-                    Some(Alphabet::Char(c)) => *c as u8,
-                    _ => {
-                        return Err("Unexpected behaviour in parse_range()".to_string());
-                    }
-                };
+                let range_start = lvalue;
+                let range_end = char_res;
 
                 if range_start > range_end {
-                    self.epsilon_nfa
-                        .add_transition(start, range_start as char, end);
-                    self.epsilon_nfa.add_transition(start, '-', end);
-                    self.epsilon_nfa
-                        .add_transition(start, range_end as char, end);
+                    Ok(vec![
+                        range_start..=range_start,
+                        '-'..='-',
+                        range_end..=range_end,
+                    ])
                 } else {
-                    self.epsilon_nfa.add_transition_range(
-                        start,
-                        (range_start..=range_end).map(|c| c as char),
-                        end,
-                    );
+                    Ok(vec![range_start..=range_end])
                 }
-
-                Ok((start, end))
             }
         }
     }
 
-    fn parse_set_char(&mut self) -> Result<Option<StatePair>, String> {
+    fn parse_set_char(&mut self) -> Result<Option<char>, String> {
         let meta_characters = "[]\\";
         let possible_escape_characters = "[]\\nrt";
         match self.parser_peek() {
             Some('\\') => {
                 self.parser_match('\\')?;
                 match self.parser_match_one_of(possible_escape_characters)? {
-                    c if meta_characters.contains(c) => {
-                        let start = self.epsilon_nfa.add_state();
-                        let end = self.epsilon_nfa.add_state();
-                        self.epsilon_nfa.add_transition(start, c, end);
-
-                        Ok(Some((start, end)))
-                    }
-                    'n' => {
-                        let start = self.epsilon_nfa.add_state();
-                        let end = self.epsilon_nfa.add_state();
-                        self.epsilon_nfa.add_transition(start, '\n', end);
-
-                        Ok(Some((start, end)))
-                    }
-                    'r' => {
-                        let start = self.epsilon_nfa.add_state();
-                        let end = self.epsilon_nfa.add_state();
-                        self.epsilon_nfa.add_transition(start, '\r', end);
-
-                        Ok(Some((start, end)))
-                    }
-                    't' => {
-                        let start = self.epsilon_nfa.add_state();
-                        let end = self.epsilon_nfa.add_state();
-                        self.epsilon_nfa.add_transition(start, '\t', end);
-
-                        Ok(Some((start, end)))
-                    }
+                    c if meta_characters.contains(c) => Ok(Some(c)),
+                    'n' => Ok(Some('\n')),
+                    'r' => Ok(Some('\r')),
+                    't' => Ok(Some('\t')),
                     _ => Err("Unexpected behaviour in parse_char()".to_string()),
                 }
             }
             Some(c) => {
                 if meta_characters.contains(c) {
-                    return Ok(None);
+                    Ok(None)
+                } else {
+                    let c = self.parser_match_none_of(meta_characters)?;
+                    Ok(Some(c))
                 }
-
-                let c = self.parser_match_none_of(meta_characters)?;
-
-                let start = self.epsilon_nfa.add_state();
-                let end = self.epsilon_nfa.add_state();
-                self.epsilon_nfa.add_transition(start, c, end);
-
-                Ok(Some((start, end)))
             }
             None => Ok(None),
         }
