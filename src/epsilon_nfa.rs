@@ -1,27 +1,25 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::{
+    StateId, StatePair,
+    nfa::{Nfa, NfaBuilder},
+};
+
 #[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
 pub enum Alphabet {
     Char(char),
     Epsilon,
 }
-type StateId = usize;
-type StatePair = (StateId, StateId);
 type NFATransition = HashMap<Alphabet, HashSet<StateId>>;
 
-#[derive(Debug, Clone)]
-pub struct EpsilonNfa {
+pub struct EpsilonNfaBuilder {
     pub transitions: Vec<NFATransition>,
-    pub start: Option<StateId>,
-    pub end: Option<StateId>,
 }
 
-impl EpsilonNfa {
+impl EpsilonNfaBuilder {
     pub fn new() -> Self {
         Self {
             transitions: Vec::new(),
-            start: None,
-            end: None,
         }
     }
 
@@ -59,17 +57,6 @@ impl EpsilonNfa {
         }
     }
 
-    pub fn epsilon_closure(&self, curr: StateId, res: &mut HashSet<StateId>) {
-        res.insert(curr);
-        if let Some(next_states) = self.transitions[curr].get(&Alphabet::Epsilon) {
-            for &next in next_states {
-                if !res.contains(&next) {
-                    self.epsilon_closure(next, res);
-                }
-            }
-        }
-    }
-
     pub fn make_deep_copy(&mut self, start: StateId, end: StateId) -> Result<StatePair, String> {
         let mut mappings: HashMap<StateId, StateId> = HashMap::new();
         mappings.insert(start, self.add_state());
@@ -104,17 +91,38 @@ impl EpsilonNfa {
 
         Ok((mappings[&start], mappings_end))
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct EpsilonNfa {
+    transitions: Vec<NFATransition>,
+    start: StateId,
+    end: StateId,
+}
+
+impl EpsilonNfa {
+    pub fn new(transitions: Vec<NFATransition>, start: StateId, end: StateId) -> Self {
+        Self {
+            transitions,
+            start,
+            end,
+        }
+    }
+
+    fn epsilon_closure(&self, curr: StateId, res: &mut HashSet<StateId>) {
+        res.insert(curr);
+        if let Some(next_states) = self.transitions[curr].get(&Alphabet::Epsilon) {
+            for &next in next_states {
+                if !res.contains(&next) {
+                    self.epsilon_closure(next, res);
+                }
+            }
+        }
+    }
 
     pub fn check(&self, input: &str) -> Result<bool, String> {
-        let Some(start) = self.start else {
-            return Err("Epsilon Nfa start has not been initialized yet".to_string());
-        };
-        let Some(end) = self.end else {
-            return Err("Epsilon Nfa end has not been initialized yet".to_string());
-        };
-
         let mut epsilon_closure_start: HashSet<StateId> = HashSet::new();
-        self.epsilon_closure(start, &mut epsilon_closure_start);
+        self.epsilon_closure(self.start, &mut epsilon_closure_start);
 
         let mut current_states: HashSet<StateId> = HashSet::new();
         current_states.extend(epsilon_closure_start);
@@ -132,6 +140,43 @@ impl EpsilonNfa {
             current_states = next_states;
         }
 
-        Ok(current_states.contains(&end))
+        Ok(current_states.contains(&self.end))
+    }
+
+    pub fn to_nfa(&self) -> Nfa {
+        let mut nfa_builder = NfaBuilder::new();
+
+        let n = self.transitions.len();
+        while nfa_builder.add_state() != n {}
+
+        let nfa_start = self.start;
+        let mut nfa_end: HashSet<StateId> = HashSet::new();
+
+        let mut state_epsilon_closure: Vec<HashSet<StateId>> = Vec::new();
+        state_epsilon_closure.resize(n, Default::default());
+        for (curr, curr_epsilon_closure) in state_epsilon_closure.iter_mut().enumerate() {
+            self.epsilon_closure(curr, curr_epsilon_closure);
+
+            if curr_epsilon_closure.contains(&self.end) {
+                nfa_end.insert(curr);
+            }
+        }
+
+        for curr in 0..n {
+            for &epsilon_state in &state_epsilon_closure[curr] {
+                for (&alphabet, next_states) in &self.transitions[epsilon_state] {
+                    if let Alphabet::Char(c) = alphabet {
+                        for &next in next_states {
+                            nfa_builder.transitions[curr]
+                                .entry(c)
+                                .or_default()
+                                .extend(state_epsilon_closure[next].iter().copied());
+                        }
+                    }
+                }
+            }
+        }
+
+        Nfa::new(nfa_builder.transitions, nfa_start, nfa_end)
     }
 }

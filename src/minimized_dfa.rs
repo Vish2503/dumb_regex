@@ -1,25 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
-pub enum Alphabet {
-    Char(char),
-}
-type StateId = usize;
+use crate::{Alphabet, StateId};
+
 type DFATransition = HashMap<Alphabet, StateId>;
 
 #[derive(Debug)]
-pub struct MinimizedDfa {
+pub struct MinimizedDfaBuilder {
     pub transitions: Vec<DFATransition>,
-    pub start: Option<StateId>,
-    pub end: Option<HashSet<StateId>>,
 }
 
-impl MinimizedDfa {
+impl MinimizedDfaBuilder {
     pub fn new() -> Self {
         Self {
             transitions: Vec::new(),
-            start: None,
-            end: None,
         }
     }
 
@@ -28,24 +21,34 @@ impl MinimizedDfa {
         self.transitions.push(DFATransition::new());
         state
     }
+}
+
+#[derive(Debug)]
+pub struct MinimizedDfa {
+    transitions: Vec<DFATransition>,
+    start: StateId,
+    end: HashSet<StateId>,
+}
+
+impl MinimizedDfa {
+    pub fn new(transitions: Vec<DFATransition>, start: StateId, end: HashSet<StateId>) -> Self {
+        Self {
+            transitions,
+            start,
+            end,
+        }
+    }
 
     pub fn check(&self, input: &str) -> Result<bool, String> {
-        let Some(start) = self.start else {
-            return Err("Nfa start has not been initialized yet".to_string());
-        };
-        let Some(ref end_states) = self.end else {
-            return Err("Nfa end has not been initialized yet".to_string());
-        };
-
-        let mut curr: StateId = start;
+        let mut curr: StateId = self.start;
         for c in input.chars() {
-            if let Some(&next) = self.transitions[curr].get(&Alphabet::Char(c)) {
+            if let Some(&next) = self.transitions[curr].get(&c) {
                 curr = next;
             } else {
                 return Ok(false);
             }
         }
 
-        Ok(end_states.contains(&curr))
+        Ok(self.end.contains(&curr))
     }
 }
