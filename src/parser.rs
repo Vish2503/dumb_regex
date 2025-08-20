@@ -1,7 +1,7 @@
 use std::{iter::Peekable, ops::RangeInclusive, str::Chars};
 
 use crate::{
-    StateId, StatePair,
+    StatePair,
     epsilon_nfa::{EpsilonNfa, EpsilonNfaBuilder},
 };
 
@@ -78,18 +78,8 @@ impl<'a> Parser<'a> {
                     return Err("Unexpectedly found no simple_re after `|`".to_string());
                 };
 
-                let start: StateId = epsilon_nfa_builder.add_state();
-                let end: StateId = epsilon_nfa_builder.add_state();
-
-                let (up_start, up_end) = lvalue;
-                let (down_start, down_end) = simple_re_res;
-
-                epsilon_nfa_builder.add_epsilon_transition(start, up_start);
-                epsilon_nfa_builder.add_epsilon_transition(start, down_start);
-                epsilon_nfa_builder.add_epsilon_transition(up_end, end);
-                epsilon_nfa_builder.add_epsilon_transition(down_end, end);
-
-                self.parse_re_tail(epsilon_nfa_builder, (start, end))
+                let union_res = epsilon_nfa_builder.add_union_transition(lvalue, simple_re_res);
+                self.parse_re_tail(epsilon_nfa_builder, union_res)
             }
             _ => Ok(lvalue),
         }
@@ -114,12 +104,8 @@ impl<'a> Parser<'a> {
     ) -> Result<StatePair, String> {
         match self.parse_basic_re(epsilon_nfa_builder)? {
             Some(basic_re_res) => {
-                let (left_start, left_end) = lvalue;
-                let (right_start, right_end) = basic_re_res;
-
-                epsilon_nfa_builder.add_epsilon_transition(left_end, right_start);
-
-                self.parse_simple_re_tail(epsilon_nfa_builder, (left_start, right_end))
+                let concat_res = epsilon_nfa_builder.add_concat_transition(lvalue, basic_re_res);
+                self.parse_simple_re_tail(epsilon_nfa_builder, concat_res)
             }
             None => Ok(lvalue),
         }
@@ -137,45 +123,20 @@ impl<'a> Parser<'a> {
             Some('*') => {
                 self.parser_match('*')?;
 
-                let (elementary_re_start, elementary_re_end) = elementary_re_res;
-
-                let start = epsilon_nfa_builder.add_state();
-                let end = epsilon_nfa_builder.add_state();
-
-                epsilon_nfa_builder.add_epsilon_transition(start, elementary_re_start);
-                epsilon_nfa_builder.add_epsilon_transition(elementary_re_end, end);
-                epsilon_nfa_builder.add_epsilon_transition(start, end);
-                epsilon_nfa_builder.add_epsilon_transition(elementary_re_end, elementary_re_start);
-
-                Ok(Some((start, end)))
+                let star_res = epsilon_nfa_builder.add_star_transition(elementary_re_res);
+                Ok(Some(star_res))
             }
             Some('+') => {
                 self.parser_match('+')?;
 
-                let (elementary_re_start, elementary_re_end) = elementary_re_res;
-
-                let start = epsilon_nfa_builder.add_state();
-                let end = epsilon_nfa_builder.add_state();
-
-                epsilon_nfa_builder.add_epsilon_transition(start, elementary_re_start);
-                epsilon_nfa_builder.add_epsilon_transition(elementary_re_end, end);
-                epsilon_nfa_builder.add_epsilon_transition(elementary_re_end, elementary_re_start);
-
-                Ok(Some((start, end)))
+                let plus_res = epsilon_nfa_builder.add_plus_transition(elementary_re_res);
+                Ok(Some(plus_res))
             }
             Some('?') => {
                 self.parser_match('?')?;
 
-                let (elementary_re_start, elementary_re_end) = elementary_re_res;
-
-                let start = epsilon_nfa_builder.add_state();
-                let end = epsilon_nfa_builder.add_state();
-
-                epsilon_nfa_builder.add_epsilon_transition(start, elementary_re_start);
-                epsilon_nfa_builder.add_epsilon_transition(elementary_re_end, end);
-                epsilon_nfa_builder.add_epsilon_transition(start, end);
-
-                Ok(Some((start, end)))
+                let question_res = epsilon_nfa_builder.add_question_transition(elementary_re_res);
+                Ok(Some(question_res))
             }
             Some('{') => {
                 self.parser_match('{')?;
@@ -231,97 +192,56 @@ impl<'a> Parser<'a> {
                     epsilon_nfa_builder.add_epsilon_transition(start, end);
                 }
 
-                let mut repeated_elementary_re_start: Option<StateId> = None;
-                let mut repeated_elementary_re_end: Option<StateId> = None;
+                let mut repeated_elementary_re: Option<StatePair> = None;
 
                 for _ in 1..=n {
-                    let (elementary_re_copy_start, elementary_re_copy_end) = epsilon_nfa_builder
+                    let elementary_re_copy = epsilon_nfa_builder
                         .make_deep_copy(elementary_re_start, elementary_re_end)?;
 
-                    if repeated_elementary_re_start.is_none()
-                        && repeated_elementary_re_end.is_none()
-                    {
-                        repeated_elementary_re_start = Some(elementary_re_copy_start);
-                        repeated_elementary_re_end = Some(elementary_re_copy_end);
+                    if let Some(repeated_elementary_re_unwrapped) = repeated_elementary_re {
+                        repeated_elementary_re = Some(epsilon_nfa_builder.add_concat_transition(
+                            repeated_elementary_re_unwrapped,
+                            elementary_re_copy,
+                        ));
                     } else {
-                        epsilon_nfa_builder.add_epsilon_transition(
-                            repeated_elementary_re_end.unwrap(),
-                            elementary_re_copy_start,
-                        );
-                        repeated_elementary_re_end = Some(elementary_re_copy_end);
+                        repeated_elementary_re = Some(elementary_re_copy);
                     }
                 }
 
                 if m == -1 {
-                    let (elementary_re_copy_start, elementary_re_copy_end) = epsilon_nfa_builder
+                    let elementary_re_copy = epsilon_nfa_builder
                         .make_deep_copy(elementary_re_start, elementary_re_end)?;
 
-                    let new_elementary_re_copy_start = epsilon_nfa_builder.add_state();
-                    let new_elementary_re_copy_end = epsilon_nfa_builder.add_state();
-
-                    epsilon_nfa_builder.add_epsilon_transition(
-                        new_elementary_re_copy_start,
-                        elementary_re_copy_start,
-                    );
-                    epsilon_nfa_builder
-                        .add_epsilon_transition(elementary_re_copy_end, new_elementary_re_copy_end);
-
-                    epsilon_nfa_builder
-                        .add_epsilon_transition(elementary_re_copy_end, elementary_re_copy_start);
-                    epsilon_nfa_builder.add_epsilon_transition(
-                        new_elementary_re_copy_start,
-                        new_elementary_re_copy_end,
-                    );
-
-                    if repeated_elementary_re_start.is_none()
-                        && repeated_elementary_re_end.is_none()
-                    {
-                        repeated_elementary_re_start = Some(new_elementary_re_copy_start);
-                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                    let elementary_re_copy_star =
+                        epsilon_nfa_builder.add_star_transition(elementary_re_copy);
+                    if let Some(repeated_elementary_re_unwrapped) = repeated_elementary_re {
+                        repeated_elementary_re = Some(epsilon_nfa_builder.add_concat_transition(
+                            repeated_elementary_re_unwrapped,
+                            elementary_re_copy_star,
+                        ));
                     } else {
-                        epsilon_nfa_builder.add_epsilon_transition(
-                            repeated_elementary_re_end.unwrap(),
-                            new_elementary_re_copy_start,
-                        );
-                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                        repeated_elementary_re = Some(elementary_re_copy_star);
                     }
                 }
 
                 for _ in n + 1..=m {
-                    let (elementary_re_copy_start, elementary_re_copy_end) = epsilon_nfa_builder
+                    let elementary_re_copy = epsilon_nfa_builder
                         .make_deep_copy(elementary_re_start, elementary_re_end)?;
 
-                    let new_elementary_re_copy_start = epsilon_nfa_builder.add_state();
-                    let new_elementary_re_copy_end = epsilon_nfa_builder.add_state();
-
-                    epsilon_nfa_builder.add_epsilon_transition(
-                        new_elementary_re_copy_start,
-                        elementary_re_copy_start,
-                    );
-                    epsilon_nfa_builder
-                        .add_epsilon_transition(elementary_re_copy_end, new_elementary_re_copy_end);
-
-                    epsilon_nfa_builder.add_epsilon_transition(
-                        new_elementary_re_copy_start,
-                        new_elementary_re_copy_end,
-                    );
-
-                    if repeated_elementary_re_start.is_none()
-                        && repeated_elementary_re_end.is_none()
-                    {
-                        repeated_elementary_re_start = Some(new_elementary_re_copy_start);
-                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                    let elementary_re_copy_question =
+                        epsilon_nfa_builder.add_question_transition(elementary_re_copy);
+                    if let Some(repeated_elementary_re_unwrapped) = repeated_elementary_re {
+                        repeated_elementary_re = Some(epsilon_nfa_builder.add_concat_transition(
+                            repeated_elementary_re_unwrapped,
+                            elementary_re_copy_question,
+                        ));
                     } else {
-                        epsilon_nfa_builder.add_epsilon_transition(
-                            repeated_elementary_re_end.unwrap(),
-                            new_elementary_re_copy_start,
-                        );
-                        repeated_elementary_re_end = Some(new_elementary_re_copy_end);
+                        repeated_elementary_re = Some(elementary_re_copy_question);
                     }
                 }
 
-                if let (Some(repeated_elementary_re_start), Some(repeated_elementary_re_end)) =
-                    (repeated_elementary_re_start, repeated_elementary_re_end)
+                if let Some((repeated_elementary_re_start, repeated_elementary_re_end)) =
+                    repeated_elementary_re
                 {
                     epsilon_nfa_builder.add_epsilon_transition(start, repeated_elementary_re_start);
                     epsilon_nfa_builder.add_epsilon_transition(repeated_elementary_re_end, end);

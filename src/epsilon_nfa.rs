@@ -57,6 +57,70 @@ impl EpsilonNfaBuilder {
         }
     }
 
+    pub fn add_union_transition(&mut self, up: StatePair, down: StatePair) -> StatePair {
+        let start: StateId = self.add_state();
+        let end: StateId = self.add_state();
+
+        let (up_start, up_end) = up;
+        let (down_start, down_end) = down;
+
+        self.add_epsilon_transition(start, up_start);
+        self.add_epsilon_transition(start, down_start);
+        self.add_epsilon_transition(up_end, end);
+        self.add_epsilon_transition(down_end, end);
+
+        (start, end)
+    }
+
+    pub fn add_concat_transition(&mut self, left: StatePair, right: StatePair) -> StatePair {
+        let (left_start, left_end) = left;
+        let (right_start, right_end) = right;
+
+        self.add_epsilon_transition(left_end, right_start);
+
+        (left_start, right_end)
+    }
+
+    pub fn add_star_transition(&mut self, inner: StatePair) -> StatePair {
+        let (inner_start, inner_end) = inner;
+
+        let start = self.add_state();
+        let end = self.add_state();
+
+        self.add_epsilon_transition(start, inner_start);
+        self.add_epsilon_transition(inner_end, end);
+        self.add_epsilon_transition(start, end);
+        self.add_epsilon_transition(inner_end, inner_start);
+
+        (start, end)
+    }
+
+    pub fn add_plus_transition(&mut self, inner: StatePair) -> StatePair {
+        let (inner_start, inner_end) = inner;
+
+        let start = self.add_state();
+        let end = self.add_state();
+
+        self.add_epsilon_transition(start, inner_start);
+        self.add_epsilon_transition(inner_end, end);
+        self.add_epsilon_transition(inner_end, inner_start);
+
+        (start, end)
+    }
+
+    pub fn add_question_transition(&mut self, inner: StatePair) -> StatePair {
+        let (inner_start, inner_end) = inner;
+
+        let start = self.add_state();
+        let end = self.add_state();
+
+        self.add_epsilon_transition(start, inner_start);
+        self.add_epsilon_transition(inner_end, end);
+        self.add_epsilon_transition(start, end);
+
+        (start, end)
+    }
+
     pub fn make_deep_copy(&mut self, start: StateId, end: StateId) -> Result<StatePair, String> {
         let mut mappings: HashMap<StateId, StateId> = HashMap::new();
         mappings.insert(start, self.add_state());
