@@ -41,7 +41,7 @@ impl Nfa {
         }
     }
 
-    pub fn check(&self, input: &str) -> Result<bool, String> {
+    pub fn is_match(&self, input: &str) -> bool {
         let mut current_states: HashSet<StateId> = HashSet::new();
         current_states.insert(self.start);
         for c in input.chars() {
@@ -58,10 +58,10 @@ impl Nfa {
 
         for end in &self.end {
             if current_states.contains(end) {
-                return Ok(true);
+                return true;
             }
         }
-        Ok(false)
+        false
     }
 
     pub fn to_dfa(&self) -> Dfa {

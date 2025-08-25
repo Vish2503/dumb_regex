@@ -184,7 +184,7 @@ impl EpsilonNfa {
         }
     }
 
-    pub fn check(&self, input: &str) -> Result<bool, String> {
+    pub fn is_match(&self, input: &str) -> bool {
         let mut epsilon_closure_start: HashSet<StateId> = HashSet::new();
         self.epsilon_closure(self.start, &mut epsilon_closure_start);
 
@@ -204,7 +204,7 @@ impl EpsilonNfa {
             current_states = next_states;
         }
 
-        Ok(current_states.contains(&self.end))
+        current_states.contains(&self.end)
     }
 
     pub fn to_nfa(&self) -> Nfa {

@@ -39,16 +39,16 @@ impl MinimizedDfa {
         }
     }
 
-    pub fn check(&self, input: &str) -> Result<bool, String> {
+    pub fn is_match(&self, input: &str) -> bool {
         let mut curr: StateId = self.start;
         for c in input.chars() {
             if let Some(&next) = self.transitions[curr].get(&c) {
                 curr = next;
             } else {
-                return Ok(false);
+                return false;
             }
         }
 
-        Ok(self.end.contains(&curr))
+        self.end.contains(&curr)
     }
 }
